@@ -134,26 +134,29 @@ def copy_and_zip_model(model_path: str, model_dict: dict, temp_dir: str,
         os.remove(checksum_path)
     with open(checksum_path, 'w') as f:
         json.dump({
-            'source_checksums': pre_checksums,
-            'target_checksums': checksums
+            'checksums': pre_checksums
         }, f, indent=2)
     
-    logger.info(f"已生成双重校验文件: {checksum_path}")
+    logger.info(f"已生成校验文件: {checksum_path}")
 
     # 创建压缩文件
     if not zip_name:
         seps = relative_manifest_path.split(os.sep)
         logger.debug(f"seps: {seps}")
-        zip_name = ((seps[-2]+"_") if seps[-2] else '') + seps[-1]
+        zip_name = ((seps[-2]+"_") if seps[-2] else '') + seps[-1] + ".zip"
         logger.debug(f"zip_name: {zip_name}")
-    zip_path = os.path.join(temp_dir, f"{zip_name}.zip")
+    zip_path = os.path.join(temp_dir, f"{zip_name}")
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         logger.info(f"开始压缩临时目录: {temp_dir}")
         for root, dirs, files in os.walk(temp_dir):
             for file in files:
                 file_path = os.path.join(root, file)
+                # 新增排除压缩文件自身的判断
+                if os.path.realpath(file_path) == os.path.realpath(zip_path):
+                    logger.debug(f"跳过压缩文件自身: {file_path}")
+                    continue
                 arcname = os.path.relpath(file_path, temp_dir)
-                logger.debug(f"正在压缩文件: {file_path} -> {arcname}")
+                logger.info(f"正在压缩文件: {file_path} -> {arcname}")
                 zipf.write(file_path, arcname=arcname)
 
     logger.info(f"压缩完成: {zip_path}")
@@ -171,11 +174,14 @@ def backup_zip(zip_path: str, backup_dir: str)->str|None:
     if not os.path.exists(backup_dir):
         logger.info(f"创建备份目录: {backup_dir}")
         os.makedirs(backup_dir)
-    
-    zip_file = Path(zip_path)
-    backup_path = os.path.join(backup_dir, zip_file.name)
-    logger.debug(f"备份文件从 {zip_path} 到 {backup_path}")
-    shutil.copy2(zip_path, backup_path)
+    try:
+        zip_file = Path(zip_path)
+        backup_path = os.path.join(backup_dir, zip_file.name)
+        logger.debug(f"备份文件从 {zip_path} 到 {backup_path}")
+        shutil.copy2(zip_path, backup_path)
+    except Exception as e:
+        logger.error(f"备份文件时发生错误: {e}")
+        return None
     
     logger.info(f"备份完成，备份文件路径: {backup_path}")
     # 删除临时目录及源压缩文件
@@ -184,33 +190,6 @@ def backup_zip(zip_path: str, backup_dir: str)->str|None:
         logger.info(f"删除临时目录: {temp_dir}")
         shutil.rmtree(temp_dir)  # 删除临时目录及其内容，包括blobs和manifest文件，以及checksum.json文件，但是不删除zip文件，因为zip文件是ne
     return backup_path
-
-def extract_digests_from_manifest(manifest_path):
-    """
-    从模型清单文件中提取所有digest值
-    :param manifest_path: 清单文件路径
-    :return: digest值列表
-    """
-    try:
-        with open(manifest_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        digests = []
-        # 添加config中的digest
-        if 'config' in data and 'digest' in data['config']:
-            digests.append(data['config']['digest'])
-        
-        # 添加layers中的所有digest
-        if 'layers' in data:
-            for layer in data['layers']:
-                if 'digest' in layer:
-                    digests.append(layer['digest'])
-        
-        return digests
-    except Exception as e:
-        logger.error(f"解析清单文件失败: {e}")
-        return None
-
 
 if __name__ == "__main__":
     # 示例用法
