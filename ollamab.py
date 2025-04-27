@@ -9,7 +9,7 @@ import hashlib
 from logging_config import setup_logging
 
 # 初始化日志配置
-logger = setup_logging(log_level=logging.DEBUG, log_file="ollama_backup.log")
+logger = setup_logging(log_level=logging.INFO, log_tag="ollamab")
 
 
 def parse_model_file(model_file_path: str)->dict|None:
@@ -64,7 +64,7 @@ def copy_and_zip_model(model_path: str, model_dict: dict, temp_dir: str,
     :param zip_name: 压缩文件名
     :return: 压缩文件路径
     """
-    logger.info(f"开始处理模型文件: {model_path}")
+    logger.info(f"开始备份模型 {model_dict['model_file_path']}")
 
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir)
