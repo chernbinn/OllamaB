@@ -25,7 +25,11 @@ def get_module_log_level(module_name):
     """
     return _module_log_levels.get(module_name)
 
-def setup_logging(log_level=logging.INFO, log_file=None, max_bytes=10485760, backup_count=5):
+def setup_logging(log_level=logging.INFO, log_file=None, max_bytes=10485760, backup_count=0):
+    # 参数说明：
+    # max_bytes=10485760 (10MB) 单个日志文件最大尺寸
+    # backup_count=5 保留5个备份文件
+    # 使用RotatingFileHandler实现自动滚动
     """
     配置日志系统
     :param log_level: 日志级别 (DEBUG/INFO/WARNING/ERROR/CRITICAL)
