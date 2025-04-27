@@ -1,8 +1,10 @@
 import logging
 import logging.handlers
 import inspect
-from pathlib import Path
+import sys
+import os
 
+golbal_log_level = logging.INFO
 # 模块级日志级别配置
 _module_log_levels = {}
 
@@ -14,7 +16,7 @@ def set_module_log_level(level, module_name=None):
     """
     if module_name is None:
         frame = inspect.currentframe().f_back
-        module_name = frame.f_globals.get('__name__', '__main__')
+        module_name = os.path.basename(frame.f_globals.get('__file__', 'unknown')).split('.')[0]
     _module_log_levels[module_name] = level
 
 def get_module_log_level(module_name):
@@ -25,7 +27,16 @@ def get_module_log_level(module_name):
     """
     return _module_log_levels.get(module_name)
 
-def setup_logging(log_level=logging.INFO, log_file=None, max_bytes=10485760, backup_count=0):
+class ModuleFilter(logging.Filter):
+    def __init__(self, module_name):
+        super().__init__()
+        self.module_name = module_name
+
+    def filter(self, record):
+        return record.name == self.module_name
+
+
+def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, max_bytes=10485760, backup_count=0):
     # 参数说明：
     # max_bytes=10485760 (10MB) 单个日志文件最大尺寸
     # backup_count=5 保留5个备份文件
@@ -33,42 +44,68 @@ def setup_logging(log_level=logging.INFO, log_file=None, max_bytes=10485760, bac
     """
     配置日志系统
     :param log_level: 日志级别 (DEBUG/INFO/WARNING/ERROR/CRITICAL)
-    :param log_file: 日志文件路径，None表示不输出到文件
+    :param log_tag: 日志客制化标记，None表示使用默认值
+    :param b_log_file: 是否输出到专有的日志文件，True表示输出到日志文件，False表示只输出到控制台
     :param max_bytes: 单个日志文件最大字节数
     :param backup_count: 保留的备份日志文件数量
     """
     # 获取调用模块名称
     frame = inspect.currentframe().f_back
-    module_name = frame.f_globals.get('__name__', '__main__')
+    module_name = os.path.basename(frame.f_globals.get('__file__', 'unknown')).split('.')[0]
+    log_tag = log_tag or module_name  # 如果没有提供log_tag，则使用模块名称作为log_tag
     
     # 创建模块级logger
     logger = logging.getLogger(module_name)
     
-    # 优先使用模块级日志级别，如未设置则使用全局级别
-    module_level = get_module_log_level(module_name)
-    logger.setLevel(module_level if module_level is not None else log_level)
+    # module_level = get_module_log_level(module_name)
+    logger.setLevel(log_level)
     
     # 清除现有handler
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
-    
+
     # 控制台handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(log_level)
+    # 在控制台格式中增加log_tag占位符
     console_formatter = logging.Formatter(
-        '%(asctime)s - %(pathname)s - [%(name)s:%(lineno)d] - %(levelname)s - %(message)s')
+        '%(asctime)s-%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s')    
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(console_formatter)
+    console_handler.setLevel(log_level)
+    console_handler.encoding = 'utf-8'
     logger.addHandler(console_handler)
+
+    file_formatter = logging.Formatter(
+        '%(asctime)s-%(pathname)s:%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s')
     
-    # 文件handler
-    if log_file:
-        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_file, maxBytes=max_bytes, backupCount=backup_count)
-        file_handler.setLevel(log_level)
-        file_formatter = logging.Formatter(
-            '%(asctime)s - %(pathname)s - [%(name)s:%(lineno)d] - %(levelname)s - %(message)s')
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
-    
-    return logger
+    # 全局日志文件（记录所有模块）
+    global_handler = logging.handlers.RotatingFileHandler(
+        "ollama_backup.log",
+        maxBytes=max_bytes,
+        backupCount=backup_count
+    )
+    global_handler.setLevel(golbal_log_level)
+    global_handler.setFormatter(logging.Formatter(
+        '%(asctime)s-%(pathname)s:%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s'
+    ))
+    global_logger = logging.getLogger()
+    global_logger.addHandler(global_handler)
+    global_logger = logging.LoggerAdapter(global_logger, {'log_tag': log_tag})    
+
+    adapter = logging.LoggerAdapter(logger, {'log_tag': log_tag})    
+    if b_log_file:
+        module_handler = logging.handlers.RotatingFileHandler(
+            f"ollama_backup_{log_tag}.log",
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding='utf-8',
+            errors='replace'
+        )
+        module_handler.setLevel(log_level)
+        module_handler.addFilter(ModuleFilter(module_name))
+        # 确保所有handler使用相同格式
+        module_handler.setFormatter(logging.Formatter(
+            '%(asctime)s-%(pathname)s:%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s'
+        ))
+        logger.addHandler(module_handler)
+
+    return adapter
