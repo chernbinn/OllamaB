@@ -4,7 +4,7 @@ import inspect
 import sys
 import os
 
-golbal_log_level = logging.INFO
+golbal_log_level = logging.DEBUG
 # 模块级日志级别配置
 _module_log_levels = {}
 
@@ -56,6 +56,7 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
     
     # 创建模块级logger
     logger = logging.getLogger(module_name)
+    adapter = logging.LoggerAdapter(logger, {'log_tag': log_tag})
     
     # module_level = get_module_log_level(module_name)
     logger.setLevel(log_level)
@@ -70,28 +71,24 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
         '%(asctime)s-%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s')    
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(console_formatter)
-    console_handler.setLevel(log_level)
+    #console_handler.setLevel(log_level)
     console_handler.encoding = 'utf-8'
     logger.addHandler(console_handler)
-
-    file_formatter = logging.Formatter(
-        '%(asctime)s-%(pathname)s:%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s')
     
     # 全局日志文件（记录所有模块）
     global_handler = logging.handlers.RotatingFileHandler(
         "ollama_backup.log",
         maxBytes=max_bytes,
-        backupCount=backup_count
+        backupCount=backup_count,
+        encoding='utf-8',
+        errors='replace'
     )
-    global_handler.setLevel(golbal_log_level)
+    #global_handler.setLevel(golbal_log_level)
     global_handler.setFormatter(logging.Formatter(
         '%(asctime)s-%(pathname)s:%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s'
     ))
-    global_logger = logging.getLogger()
-    global_logger.addHandler(global_handler)
-    global_logger = logging.LoggerAdapter(global_logger, {'log_tag': log_tag})    
+    logger.addHandler(global_handler)
 
-    adapter = logging.LoggerAdapter(logger, {'log_tag': log_tag})    
     if b_log_file:
         module_handler = logging.handlers.RotatingFileHandler(
             f"ollama_backup_{log_tag}.log",
@@ -100,11 +97,11 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
             encoding='utf-8',
             errors='replace'
         )
-        module_handler.setLevel(log_level)
+        #module_handler.setLevel(log_level)
         module_handler.addFilter(ModuleFilter(module_name))
         # 确保所有handler使用相同格式
         module_handler.setFormatter(logging.Formatter(
-            '%(asctime)s-%(pathname)s:%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s'
+            '%(asctime)s-%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s'
         ))
         logger.addHandler(module_handler)
 
