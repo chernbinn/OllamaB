@@ -1,2 +1,4 @@
 *.log
 *.pyc
+backup
+temp_models
