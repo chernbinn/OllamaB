@@ -31,8 +31,127 @@ class BackupApp:
         self.model_cache = {}
 
         # 初始化UI组件
-        self.create_widgets()
+        
+        self.create_widgets()        
         self.load_models()
+        #self.configure_style()
+        self.configure_style_warm()
+
+    def configure_style(self)->None:
+        # 创建样式对象        
+        style = ttk.Style()
+    
+        # 强制使用 'clam' 主题（支持完整自定义）
+        style.theme_use("clam")
+
+        logger.debug("可用主题:", style.theme_names())
+        logger.debug("当前主题:", style.theme_use())
+        
+        # 基础Treeview样式
+        style.configure('Treeview',
+                    background='white',
+                    rowheight=25,
+                    fieldbackground='white',
+                    bordercolor='#e0e0e0',
+                    borderwidth=1)
+        # 表头样式
+        style.configure('Treeview.Heading',
+                    background='#f0f0f0',
+                    foreground='black',
+                    font=('Arial', 10, 'bold'),
+                    relief='raised',
+                    padding=5)
+
+        # 行样式（必须使用.tag_configure方式）
+        self.tree.tag_configure('oddrow', background='white')
+        self.tree.tag_configure('evenrow', background='#f5f5f5')
+        self.tree.tag_configure('childrow', background='#e9e9e9')
+
+        # 选中状态映射
+        style.map("Treeview",
+                background=[('selected', '#0078d7')],
+                foreground=[('selected', 'white')])
+    
+    def configure_style_warm(self) -> None:
+        style = ttk.Style()
+        style.theme_use('clam')  # 必须使用clam主题才能完全自定义
+        
+        # 全局字体设置
+        default_font = ('Microsoft YaHei', 10)  # 可根据系统调整
+        
+        # 基础框架样式（浅米色背景）
+        style.configure('TFrame', 
+                    background='#FFF5E6',  # 浅米色
+                    relief='flat')
+        
+        # 按钮样式（橙色系）
+        style.configure('TButton',
+                    background='#FFB347',  # 阳光橙
+                    foreground='white',
+                    font=default_font,
+                    padding=6,
+                    relief='raised',
+                    bordercolor='#FF9500')
+        style.map('TButton',
+                background=[('active', '#FF9500'),  # 按下时变深
+                            ('disabled', '#FFD699')])  # 禁用时变浅
+        
+        # 输入框样式
+        style.configure('TEntry',
+                    fieldbackground='white',
+                    foreground='#5A4A3A',  # 咖啡色文字
+                    bordercolor='#FFD6A8',
+                    insertcolor='#FF9500',  # 光标橙色
+                    padding=5)
+        
+        # 滚动条样式
+        style.configure('Vertical.TScrollbar',
+                    background='#FFD6A8',
+                    troughcolor='#FFF5E6',
+                    gripcount=0,
+                    arrowsize=12)
+        
+        # 树形视图样式（温暖风格）
+        style.configure('Treeview',
+                    background='#FFF9F0',  # 奶油白
+                    foreground='#5A4A3A',
+                    rowheight=28,
+                    fieldbackground='#FFF9F0',
+                    bordercolor='#FFD6A8',
+                    font=default_font,
+                    borderwidth=0,
+                    highlightthickness=0,
+                    padding=(8, 10))
+        
+        # 树形视图表头
+        style.configure('Treeview.Heading',
+                    background='#FFB347',
+                    foreground='white',
+                    font=('Microsoft YaHei', 10, 'bold'),
+                    relief='flat',
+                    padding=(8, 5, 8, 5))                    
+        style.map('Treeview.Heading',
+             background=[('active', '#FFB347'),  # 悬停状态
+                        ('!active', '#FFB347')], # 正常状态
+             relief=[('active', 'flat'),
+                    ('!active', 'flat')])
+        
+        # 树形视图行样式
+        if hasattr(self, 'tree'):
+            self.tree.tag_configure('oddrow', background='#FFF9F0')  # 奶油白
+            self.tree.tag_configure('evenrow', background='#FFE8D6') # 淡珊瑚
+            self.tree.tag_configure('childrow', background='#FFD6A8') # 浅橙
+        
+        # 选中状态
+        style.map('Treeview',
+                background=[('selected', '#E67E22')],  # 南瓜橙
+                foreground=[('selected', 'white')])
+        
+        # PanedWindow分隔线样式
+        style.configure('TPanedwindow', 
+                    background='#FFD6A8',
+                    sashwidth=8,
+                    sashrelief='flat')
 
     def create_widgets(self)->None:
         # 主框架
@@ -44,26 +163,34 @@ class BackupApp:
         control_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
 
         self.backup_path = tk.StringVar()
-        ttk.Entry(control_frame, textvariable=self.backup_path).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Entry(control_frame, textvariable=self.backup_path).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0,5))
+
         ttk.Button(control_frame, text="选择路径", command=self.choose_backup_dir).pack(side=tk.LEFT, padx=5)
-        self.backup_btn = ttk.Button(control_frame, text="开始备份", command=self.start_backup)
+        self.backup_btn = ttk.Button(control_frame, text="开始备份", command=self.start_backup, style='TButton')
         self.backup_btn.pack(side=tk.RIGHT)
 
         # 信息面板容器
-        info_panel = ttk.PanedWindow(main_frame, orient=tk.VERTICAL)
+        info_panel = ttk.PanedWindow(main_frame, orient=tk.VERTICAL, style='TPanedwindow')
         info_panel.pack(fill=tk.BOTH, expand=True)
 
         # 模型树形面板
         tree_frame = ttk.Frame(info_panel)
-        self.tree = ttk.Treeview(tree_frame, columns=('selected'), show='tree headings')
-        self.tree.heading('#0', text='模型名称', anchor=tk.W)
-        self.tree.column('#0', width=550, anchor=tk.W)
-        self.tree.heading('selected', text='备份', anchor=tk.W)
-        self.tree.column('selected', width=60, anchor=tk.W)
+        self.tree = ttk.Treeview(tree_frame, columns=('selected', '_padding'), show='tree headings', 
+                                selectmode='extended', style="Treeview")
+        # 隐藏多余的列（避免显示填充列）
+        self.tree['displaycolumns'] = ('selected',)
 
-        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.heading('#0', text='模型名称', anchor=tk.W)
+        self.tree.column('#0', width=670, anchor=tk.W, stretch=True)
+        self.tree.heading('selected', text='备份', anchor=tk.E)
+        self.tree.column('selected', width=60, anchor=tk.E, stretch=False)
+
+        # 添加填充列配置（确保右对齐列能固定在右侧）
+        self.tree.column('_padding', width=0, stretch=True, minwidth=0)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview, style='Vertical.TScrollbar')
         self.tree.configure(yscroll=scrollbar.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH,  expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         info_panel.add(tree_frame)
 
@@ -182,6 +309,7 @@ class BackupApp:
             messagebox.showwarning("路径错误", "模型存储目录结构不完整，请重新选择正确路径")
             return
 
+        i = 0
         for model in os.listdir(manifests_path):
             model_versions = os.path.join(manifests_path, model)
             if os.path.isdir(model_versions):
@@ -192,12 +320,16 @@ class BackupApp:
                     #logger.debug(f"模型文件: {json.dumps(model_dict, indent=2)}")
                     if not model_dict:
                         continue
-                    item = self.tree.insert('', 'end', text=f"{model}:{version}", values=(self.UNCHECKED_SYMBOL,))
+                    item = self.tree.insert('', 'end', text=f"{model}:{version}", values=(self.UNCHECKED_SYMBOL,),
+                            tags=('oddrow' if (i % 2) == 0 else 'evenrow'))
                     logger.debug(f"已加载模型: {model}:{version}")
-                    self.tree.insert(item, 'end', values=('',), text=os.path.join('manifests', 'registry.ollama.ai', 'library', model, version))
+                    self.tree.insert(item, 'end', values=('',), 
+                                    text=os.path.join('manifests', 'registry.ollama.ai', 'library', model, version),
+                                    tags=('childrow'))
                     for digest in model_dict.get('digests', []):
-                        self.tree.insert(item, 'end', values=('',), text=os.path.join('blobs', digest))
-                    #self.tree.tag_bind(item, '<Button-1>', self.toggle_checkbox)
+                        self.tree.insert(item, 'end', values=('',), text=os.path.join('blobs', digest),
+                                        tags=('childrow'))
+                    i += 1            
 
     def get_model_detail_file(self, model_name, model_file=None):
         # 从缓存中获取模型信息
