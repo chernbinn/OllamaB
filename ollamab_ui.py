@@ -11,18 +11,23 @@ import json
 # 初始化日志配置
 logger = setup_logging(log_level=logging.DEBUG)
 
+from ctypes import windll
+windll.shcore.SetProcessDpiAwareness(1)  # 解决高DPI缩放问题
+
 class BackupApp:
     def __init__(self, master):
         self.master = master
         master.title("Ollama模型备份工具")
-        master.geometry("800x600")
+        master.geometry("1200x800")
 
         # 状态符号配置
         self.CHECKED_SYMBOL = '[Y]'
         self.UNCHECKED_SYMBOL = '[ ]'
+        self.BACKUPED_SYMBOL = '[已备份]'
+        self.default_backup_path = r"F:\llm_models\ollama_modes_backup"
         
         # 环境变量检测
-        self.model_path = "D:\\ollama_model" # os.getenv("OLLAMA_MODELS")
+        self.model_path = os.getenv("OLLAMA_MODELS")
         if not self.model_path or not os.path.exists(self.model_path):
             self.prompt_model_path()
 
@@ -31,11 +36,10 @@ class BackupApp:
         self.model_cache = {}
 
         # 初始化UI组件
-        
-        self.create_widgets()        
-        self.load_models()
-        #self.configure_style()
+        self.create_widgets()
         self.configure_style_warm()
+        # 初始化数据内容
+        self.load_models()
 
     def configure_style(self)->None:
         # 创建样式对象        
@@ -91,7 +95,7 @@ class BackupApp:
                     background='#FFB347',  # 阳光橙
                     foreground='white',
                     font=default_font,
-                    padding=6,
+                    padding=5,
                     relief='raised',
                     bordercolor='#FF9500')
         style.map('TButton',
@@ -110,13 +114,14 @@ class BackupApp:
         style.configure('TLabel',
                     background='#FFF5E6',
                     foreground='#5A4A3A',
-                    font=default_font)
+                    font=default_font,
+                    padding=(8, 5, 8, 5))
         
         # 滚动条样式
         style.configure('Vertical.TScrollbar',
-                    background='#FFD6A8',
-                    troughcolor='#FFF5E6',
-                    gripcount=0,
+                    background='#FFA726',
+                    troughcolor='#FFD6A8',
+                    gripcount=1,
                     arrowsize=12)
         
         # 树形视图样式（温暖风格）
@@ -190,7 +195,7 @@ class BackupApp:
         backup_path_frame.pack(fill=tk.X)
 
         ttk.Label(backup_path_frame, text="备份路径:").pack(side=tk.LEFT, padx=(0,5))
-        self.backup_path_var = tk.StringVar()
+        self.backup_path_var = tk.StringVar(value=self.default_backup_path)
         ttk.Entry(backup_path_frame, 
                 textvariable=self.backup_path_var,
                 style='TEntry').pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0,5))
@@ -218,7 +223,7 @@ class BackupApp:
         self.tree.heading('#0', text='模型名称', anchor=tk.W)
         self.tree.column('#0', width=670, anchor=tk.W, stretch=True)
         self.tree.heading('selected', text='备份', anchor=tk.E)
-        self.tree.column('selected', width=60, anchor=tk.E, stretch=False)
+        self.tree.column('selected', width=80, anchor=tk.E, stretch=False)
 
         # 添加填充列配置（确保右对齐列能固定在右侧）
         self.tree.column('_padding', width=0, stretch=True, minwidth=0)
@@ -232,7 +237,7 @@ class BackupApp:
         # 绑定事件
         self.tree.bind('<Button-1>', self.toggle_checkbox)
         # 添加选中项变更事件
-        self.tree.bind('<<TreeviewOpen>>', self.update_node_status)
+        # self.tree.bind('<<TreeviewOpen>>', self.update_node_status)
 
     def toggle_checkbox(self, event:any)->None:
         # 获取点击位置的列ID
@@ -287,7 +292,7 @@ class BackupApp:
                     self.tree.delete(model)
                     continue
 
-                backup_dir = self.backup_path.get()
+                backup_dir = self.backup_path_var.get()
                 seps = model_dict["model_file_path"].split(os.sep)
                 zip_name = "backup_" + ((seps[-2]+"_") if seps[-2] else '') + seps[-1] + ".zip"
                 # zip_name = "backup_" + ((seps[-2]+"_") if seps[-2] else '') + seps[-1] + ".zpaq"
@@ -296,6 +301,7 @@ class BackupApp:
                 if os.path.exists(dest_path):
                     logger.warning(f"备份文件已存在: {dest_path}")
                     self.thread_safe_messagebox("文件存在", f"备份文件{dest_path}已存在，不再备份！", "warning")
+                    self.update_backup_status(model, self.BACKUPED_SYMBOL)
                     continue
                 # 开始备份
                 #zip_path = copy_and_zip_model(self.model_path, model_dict, zip_name)
@@ -304,12 +310,15 @@ class BackupApp:
                 
                 if zip_path:
                     zip_path = backup_zip(zip_path, backup_dir)
+                    logger.info(f"备份完成: {zip_path}")
                     self.thread_safe_messagebox("备份完成", f"{model} 备份完成：{zip_path}")
+                    self.update_backup_status(model, self.BACKUPED_SYMBOL)
+            logger.info("所有模型备份完成！")
+            self.thread_safe_messagebox("备份完成", f"所有模型备份完成！", "info")
         except Exception as e:
             logger.error(f"备份过程中发生错误: \n{traceback.format_exc()}")
             self.thread_safe_messagebox("备份错误", f"备份失败！", "error")
         finally:
-            self.thread_safe_messagebox("备份完成", f"所有模型备份完成！", "info")
             try:
                 if self.master and self.master.winfo_exists():
                     self.master.after(0, lambda: self.backup_btn.config(state=tk.NORMAL))
@@ -321,8 +330,6 @@ class BackupApp:
         if path:
             self.model_path = path
             self.load_models()
-        else:
-            messagebox.showerror("错误", "必须指定模型路径")
 
     def choose_backup_dir(self):
         path = filedialog.askdirectory(title="选择备份模型目录")
@@ -337,13 +344,23 @@ class BackupApp:
             self.model_path = path  # 更新实例变量
             self.load_models()  # 重新加载模型
 
-    def update_node_status(self, event):
-        """处理树形节点展开事件，暂时保留空实现"""
-        pass
-
-    def update_node_status(self, event):
-        """处理树形节点展开事件，暂时保留空实现"""
-        pass
+    def check_backup_status(self, backup_file: str)->bool:
+        backup_dir = self.backup_path_var.get()
+        if not backup_dir or not os.path.exists(backup_dir):
+            return False
+        dest_path = os.path.join(backup_dir, backup_file)
+        return os.path.exists(dest_path)
+    
+    def update_backup_status(self, model_name, backup_status: str)->None:
+        for item in self.tree.get_children():
+            if self.tree.item(item, 'text') == model_name:
+                current_values = list(self.tree.item(item, 'values'))
+                current_values[0] = backup_status
+                self.tree.item(item, 
+                                values=tuple(current_values),
+                                tags=self.tree.item(item, 'tags'))
+                logger.debug(f"更新状态: {model_name} -> {backup_status}")
+        logger.error(f"未找到模型: {model_name}")
 
     def load_models(self):
         manifests_path = os.path.join(self.model_path, 'manifests', 'registry.ollama.ai', 'library')
@@ -363,7 +380,8 @@ class BackupApp:
                     #logger.debug(f"模型文件: {json.dumps(model_dict, indent=2)}")
                     if not model_dict:
                         continue
-                    item = self.tree.insert('', 'end', text=f"{model}:{version}", values=(self.UNCHECKED_SYMBOL,),
+                    value = self.BACKUPED_SYMBOL if self.check_backup_status(f"backup_{model}_{version}.zip") else self.UNCHECKED_SYMBOL
+                    item = self.tree.insert('', 'end', text=f"{model}:{version}", values=(value,),
                             tags=('oddrow' if (i % 2) == 0 else 'evenrow'))
                     logger.debug(f"已加载模型: {model}:{version}")
                     self.tree.insert(item, 'end', values=('',), 
@@ -372,7 +390,7 @@ class BackupApp:
                     for digest in model_dict.get('digests', []):
                         self.tree.insert(item, 'end', values=('',), text=os.path.join('blobs', digest),
                                         tags=('childrow'))
-                    i += 1            
+                    i += 1  
 
     def get_model_detail_file(self, model_name, model_file=None):
         # 从缓存中获取模型信息
