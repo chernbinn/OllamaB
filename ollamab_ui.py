@@ -82,7 +82,9 @@ class BackupApp:
         # 基础框架样式（浅米色背景）
         style.configure('TFrame', 
                     background='#FFF5E6',  # 浅米色
-                    relief='flat')
+                    borderwidth=2,
+                    relief='groove',
+                    bordercolor='#FFD6A8')
         
         # 按钮样式（橙色系）
         style.configure('TButton',
@@ -103,6 +105,12 @@ class BackupApp:
                     bordercolor='#FFD6A8',
                     insertcolor='#FF9500',  # 光标橙色
                     padding=5)
+        
+        # 标签样式
+        style.configure('TLabel',
+                    background='#FFF5E6',
+                    foreground='#5A4A3A',
+                    font=default_font)
         
         # 滚动条样式
         style.configure('Vertical.TScrollbar',
@@ -159,15 +167,42 @@ class BackupApp:
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # 控制面板
-        control_frame = ttk.Frame(main_frame)
+        control_frame = ttk.Frame(main_frame, style='TFrame')
         control_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
 
-        self.backup_path = tk.StringVar()
-        ttk.Entry(control_frame, textvariable=self.backup_path).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0,5))
+        # 模型路径控件组（第一行）
+        model_path_frame = ttk.Frame(control_frame)
+        model_path_frame.pack(fill=tk.X, pady=(0,5))
 
-        ttk.Button(control_frame, text="选择路径", command=self.choose_backup_dir).pack(side=tk.LEFT, padx=5)
-        self.backup_btn = ttk.Button(control_frame, text="开始备份", command=self.start_backup, style='TButton')
+        ttk.Label(model_path_frame, text="模型路径:").pack(side=tk.LEFT, padx=(0,5))
+        self.model_path_var = tk.StringVar(value=self.model_path)
+        ttk.Entry(model_path_frame, 
+                textvariable=self.model_path_var,
+                style='TEntry').pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0,5))
+
+        ttk.Button(model_path_frame, 
+                text="选择路径",
+                command=self.choose_model_dir,
+                style='TButton').pack(side=tk.LEFT)
+
+        # 备份路径控件组（第二行）
+        backup_path_frame = ttk.Frame(control_frame)
+        backup_path_frame.pack(fill=tk.X)
+
+        ttk.Label(backup_path_frame, text="备份路径:").pack(side=tk.LEFT, padx=(0,5))
+        self.backup_path_var = tk.StringVar()
+        ttk.Entry(backup_path_frame, 
+                textvariable=self.backup_path_var,
+                style='TEntry').pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0,5))
+
+        self.backup_btn = ttk.Button(backup_path_frame, 
+                                text="开始备份", 
+                                command=self.start_backup,
+                                style='Accent.TButton')
         self.backup_btn.pack(side=tk.RIGHT)
+
+        # 添加分隔线增强视觉区分
+        #ttk.Separator(control_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
 
         # 信息面板容器
         info_panel = ttk.PanedWindow(main_frame, orient=tk.VERTICAL, style='TPanedwindow')
@@ -218,9 +253,9 @@ class BackupApp:
             logger.debug(f"复选框状态更新：{model_name} -> {new_state}")
 
     def start_backup(self):
-        if not self.backup_path.get():
+        if not self.backup_path_var.get():
             self.choose_backup_dir()
-            if not self.backup_path.get():
+            if not self.backup_path_var.get():
                 return
 
         selected_models = [
@@ -290,9 +325,17 @@ class BackupApp:
             messagebox.showerror("错误", "必须指定模型路径")
 
     def choose_backup_dir(self):
-        path = filedialog.askdirectory()
+        path = filedialog.askdirectory(title="选择备份模型目录")
         if path:
-            self.backup_path.set(path)
+            self.backup_path_var.set(path)
+    
+    def choose_model_dir(self):
+        """选择模型路径"""
+        path = filedialog.askdirectory(title="选择模型存储目录")
+        if path:
+            self.model_path_var.set(path)
+            self.model_path = path  # 更新实例变量
+            self.load_models()  # 重新加载模型
 
     def update_node_status(self, event):
         """处理树形节点展开事件，暂时保留空实现"""
