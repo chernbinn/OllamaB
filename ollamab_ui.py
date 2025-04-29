@@ -111,10 +111,10 @@ class BackupApp:
         threading.Thread(target=self.run_backup, args=(selected_models,)).start()
 
     def run_backup(self, models):
-        logger.info(f"开始备份模型ss: {models}")
+        logger.info(f"开始备份模型: {models}")
         try:
             for model in models:
-                print(f"开始备份模型: {model}")
+                logger.info(f"备份模型: {model}")
                 model_dict = self.get_model_detail_file(model)
                 if not model_dict:
                     # 新增错误处理流程
@@ -147,6 +147,7 @@ class BackupApp:
             logger.error(f"备份过程中发生错误: \n{traceback.format_exc()}")
             self.thread_safe_messagebox("备份错误", f"备份失败！", "error")
         finally:
+            self.thread_safe_messagebox("备份完成", f"所有模型备份完成！", "info")
             try:
                 if self.master and self.master.winfo_exists():
                     self.master.after(0, lambda: self.backup_btn.config(state=tk.NORMAL))
