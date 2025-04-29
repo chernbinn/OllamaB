@@ -3,7 +3,15 @@ from tkinter import ttk, filedialog, messagebox
 import os
 import threading
 import traceback
-from ollamab import parse_model_file, copy_and_zip_model, backup_zip, zip_model, paq_zip_model
+from ollamab import (
+    clean_temp_files,
+    parse_model_file,     
+    backup_zip, 
+    copy_and_zip_model,  # 拷贝到临时文件在进行普通zip压缩
+    zip_model,  # 直接对文件压缩，采用ZIP_LZMA t9高压缩算法
+    paq_zip_model, # zpaq压缩算法，t5效果最好，但是太耗内存，大文件无法执行压缩
+    check_zip_file_integrity # 检查zip压缩文件完整性
+)
 import logging
 from logging_config import setup_logging
 import json
@@ -297,9 +305,9 @@ class BackupApp:
                 zip_name = "backup_" + ((seps[-2]+"_") if seps[-2] else '') + seps[-1] + ".zip"
                 # zip_name = "backup_" + ((seps[-2]+"_") if seps[-2] else '') + seps[-1] + ".zpaq"
                 logger.debug(f"zip_name: {zip_name}")
-                dest_path = os.path.join(backup_dir, zip_name)
-                if os.path.exists(dest_path):
-                    logger.warning(f"备份文件已存在: {dest_path}")
+                # dest_path = os.path.join(backup_dir, zip_name)
+                if self.check_backup_status(zip_name):
+                    logger.info(f"备份文件已存在: {dest_path}")
                     self.thread_safe_messagebox("文件存在", f"备份文件{dest_path}已存在，不再备份！", "warning")
                     self.update_backup_status(model, self.BACKUPED_SYMBOL)
                     continue
@@ -318,6 +326,7 @@ class BackupApp:
         except Exception as e:
             logger.error(f"备份过程中发生错误: \n{traceback.format_exc()}")
             self.thread_safe_messagebox("备份错误", f"备份失败！", "error")
+            clean_temp_files(self.model_path, self.model_cache)
         finally:
             try:
                 if self.master and self.master.winfo_exists():
@@ -349,18 +358,32 @@ class BackupApp:
         if not backup_dir or not os.path.exists(backup_dir):
             return False
         dest_path = os.path.join(backup_dir, backup_file)
-        return os.path.exists(dest_path)
+        backupde, zip_file = check_zip_file_integrity(dest_path)
+        if backupde and zip_file:
+            return True
+        elif not backupde and zip_file:
+            thread_safe_messagebox("文件损坏", f"备份文件{zip_file}校验失败，手动检查！", "warning")
+            return False
+        else:
+            return False
     
     def update_backup_status(self, model_name, backup_status: str)->None:
-        for item in self.tree.get_children():
-            if self.tree.item(item, 'text') == model_name:
-                current_values = list(self.tree.item(item, 'values'))
-                current_values[0] = backup_status
-                self.tree.item(item, 
-                                values=tuple(current_values),
-                                tags=self.tree.item(item, 'tags'))
-                logger.debug(f"更新状态: {model_name} -> {backup_status}")
-        logger.error(f"未找到模型: {model_name}")
+        def update_backup_status_ui(model_name, backup_status):
+            for item in self.tree.get_children():
+                if self.tree.item(item, 'text') == model_name:
+                    current_values = list(self.tree.item(item, 'values'))
+                    current_values[0] = backup_status
+                    self.tree.item(item,
+                                    values=tuple(current_values),
+                                    tags=self.tree.item(item, 'tags'))
+                    logger.debug(f"更新状态: {model_name} -> {backup_status}")
+                    return
+            logger.error(f"未找到模型: {model_name}")
+        # 在UI线程中更新状态
+        try:
+            self.master.after(0, lambda: update_backup_status_ui(model_name, backup_status))
+        except:
+            pass
 
     def load_models(self):
         manifests_path = os.path.join(self.model_path, 'manifests', 'registry.ollama.ai', 'library')
@@ -448,8 +471,8 @@ class BackupApp:
                     self.master.after(0, lambda: messagebox.showerror(title, message))
                 else:
                     self.master.after(0, lambda: messagebox.showwarning(title, message))
-        except Exception as e:
-            logger.error(f"消息框显示异常: {str(e)}")
+        except:
+            pass
 
 if __name__ == "__main__":
     root = tk.Tk()

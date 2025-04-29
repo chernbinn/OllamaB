@@ -13,6 +13,12 @@ from logging_config import setup_logging
 # 初始化日志配置
 logger = setup_logging(log_level=logging.INFO, log_tag="ollamab")
 
+def calculate_md5(file_path):
+    md5 = hashlib.md5()
+    with open(file_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(4096), b''):
+            md5.update(chunk)
+    return md5.hexdigest()
 
 def parse_model_file(model_file_path: str)->dict|None:
     """
@@ -57,6 +63,42 @@ def parse_model_file(model_file_path: str)->dict|None:
         logger.error(f"堆栈信息: {traceback.format_exc()}")
         return None
 
+def check_zip_file_integrity(zip_file: str)->bool:
+    """
+    检查zip文件的完整性，MD5校验。
+    :param zip_file: 要检查的zip文件路径, zip文件名组成：modelname_version_md5值.zip
+    :return: 如果文件MD5校验通过，则返回True；否则返回False
+    """
+    logger.info(f"开始检查zip文件完整性: {zip_file}")
+    if not os.path.exists(zip_file):
+        # 从目录中查找不带md5值的有相同名称的zip文件
+        zip_file_name = Path(zip_file).stem
+        logger.debug(f"查找同名文件: {os.path.dirname(zip_file)}下{zip_file_name}*")
+        zip_files = [f for f in os.listdir(os.path.dirname(zip_file)) if f.startswith(zip_file_name)]
+        if len(zip_files) >= 1:
+            zip_file = os.path.join(os.path.dirname(zip_file), zip_files[0])
+            logger.info(f"找到备份文件: {zip_file}")            
+        else:
+            logger.debug(f"未找到同名文件: {zip_file}")
+            return False, None
+    # 从名称中解析出md5值
+    md5_from_name = zip_file.split('_')[-1].split('.')[0]
+    logger.info(f"从文件名中解析出的MD5值: {md5_from_name}")
+    # 计算文件的MD5值
+    try:
+        md5_hash = calculate_md5(zip_file) # hashlib.md5(open(zip_file, 'rb').read()).hexdigest()
+        logger.info(f"计算得到的MD5值: {md5_hash}")
+        if md5_hash == md5_from_name:
+            logger.debug(f"MD5校验通过: {zip_file}")
+            return True, zip_file
+        else:
+            logger.error(f"MD5校验失败: {zip_file}")
+            return False, zip_file
+    except Exception as e:
+        logger.error(f"MD5校验过程中发生错误: {e}")
+        logger.error(f"堆栈信息: {traceback.format_exc()}")
+        return False, zip_file
+
 def copy_and_zip_model(model_path: str, model_dict: dict, zip_name:str|None=None,
                         temp_dir: str="temp_models",)->str|None:
     """
@@ -78,11 +120,11 @@ def copy_and_zip_model(model_path: str, model_dict: dict, zip_name:str|None=None
     def copy_with_retry(src, dest, max_retries=3):
         """带重试机制的文件拷贝，包含MD5校验"""
         retries = 0
-        src_md5 = hashlib.md5(open(src, 'rb').read()).hexdigest()
+        src_md5 = calculate_md5(src)
         pre_checksums[os.path.relpath(src, model_path)] = src_md5
 
         if os.path.exists(dest):
-            dest_md5 = hashlib.md5(open(dest, 'rb').read()).hexdigest()
+            dest_md5 = calculate_md5(dest) #hashlib.md5(open(dest, 'rb').read()).hexdigest()
             if dest_md5 == src_md5:
                 logger.info(f"文件已存在且MD5校验通过: {src} -> {dest}")
                 return True
@@ -92,14 +134,14 @@ def copy_and_zip_model(model_path: str, model_dict: dict, zip_name:str|None=None
 
         while retries < max_retries:
             try:
-                logger.info(f"开始拷贝文件: {src} -> {dest}")
+                logger.debug(f"开始拷贝文件: {src} -> {dest}")
                 shutil.copy2(src, dest)
-                dest_md5 = hashlib.md5(open(dest, 'rb').read()).hexdigest()
+                dest_md5 = calculate_md5(dest) #hashlib.md5(open(dest, 'rb').read()).hexdigest()
                 
                 if dest_md5 != src_md5:
                     raise ValueError(f"MD5校验失败: 源文件 {src_md5} != 目标文件 {dest_md5}")
                 
-                logger.info(f"校验通过: {src} -> {dest}")
+                logger.debug(f"校验通过: {src} -> {dest}")
                 return True
             except Exception as e:
                 logger.warning(f"第{retries+1}次拷贝失败: {e}")
@@ -116,7 +158,9 @@ def copy_and_zip_model(model_path: str, model_dict: dict, zip_name:str|None=None
     os.makedirs(os.path.dirname(manifest_dest), exist_ok=True)
     
     if not copy_with_retry(manifest_src, manifest_dest):
-        raise RuntimeError(f"文件拷贝失败: {manifest_src}")
+        # raise RuntimeError(f"文件拷贝失败: {manifest_src}")
+        logger.error(f"文件拷贝失败: {manifest_src}")
+        return None
     
     checksums[relative_manifest_path] = pre_checksums[relative_manifest_path]
 
@@ -127,7 +171,9 @@ def copy_and_zip_model(model_path: str, model_dict: dict, zip_name:str|None=None
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
         if not copy_with_retry(src_path, dest_path):
-            raise RuntimeError(f"文件拷贝失败: {src_path}")
+            # raise RuntimeError(f"文件拷贝失败: {src_path}")
+            logger.error(f"文件拷贝失败: {src_path}")
+            return None
         
         relative_path = os.path.relpath(dest_path, temp_dir)
         checksums[relative_path] = pre_checksums[os.path.relpath(src_path, model_path)]
@@ -141,7 +187,7 @@ def copy_and_zip_model(model_path: str, model_dict: dict, zip_name:str|None=None
             'checksums': pre_checksums
         }, f, indent=2)
     
-    logger.info(f"已生成校验文件: {checksum_path}")
+    logger.debug(f"已生成校验文件: {checksum_path}")
 
     # 创建压缩文件
     if not zip_name:
@@ -160,7 +206,7 @@ def copy_and_zip_model(model_path: str, model_dict: dict, zip_name:str|None=None
                     logger.debug(f"跳过压缩文件自身: {file_path}")
                     continue
                 arcname = os.path.relpath(file_path, temp_dir)
-                logger.info(f"正在压缩文件: {file_path} -> {arcname}")
+                logger.debug(f"正在压缩文件: {file_path} -> {arcname}")
                 zipf.write(file_path, arcname=arcname)
 
     logger.info(f"压缩完成: {zip_path}")
@@ -193,8 +239,11 @@ def zip_model(model_path: str, model_dict: dict, zip_name:str|None=None)->str|No
             zipf.write(manifest_src, arcname=manifest_relpath)
             
             # 计算并记录MD5
+            checksums[manifest_relpath] = calculate_md5(manifest_src)
+            """
             with open(manifest_src, 'rb') as f:
                 checksums[manifest_relpath] = hashlib.md5(f.read()).hexdigest()
+            """
 
             # 添加blob文件
             for digest in model_dict.get('digests', []):
@@ -203,8 +252,11 @@ def zip_model(model_path: str, model_dict: dict, zip_name:str|None=None)->str|No
                 zipf.write(blob_path, arcname=blob_relpath)
                 
                 # 计算并记录MD5
+                checksums[blob_relpath] = calculate_md5(blob_path)
+                """
                 with open(blob_path, 'rb') as f:
                     checksums[blob_relpath] = hashlib.md5(f.read()).hexdigest()
+                """
 
             # 在内存中生成校验文件
             checksum_data = json.dumps({'checksums': checksums}, indent=2)
@@ -247,8 +299,11 @@ def paq_zip_model(model_path: str, model_dict: dict, zip_name:str|None=None)->st
         checksums = {}
         for f in file_list:
             rel_path = os.path.relpath(f, model_path)
+            checksums[rel_path] = calculate_md5(f)
+            """
             with open(f, 'rb') as fp:
                 checksums[rel_path] = hashlib.md5(fp.read()).hexdigest()
+            """
         
         # 生成带时间戳的校验文件
         checksum_path = os.path.join(model_path, f'checksum.json')
@@ -257,7 +312,7 @@ def paq_zip_model(model_path: str, model_dict: dict, zip_name:str|None=None)->st
         # 将校验文件加入压缩列表
         file_list.append(checksum_path)
         
-        logger.info(f"开始ZPAQ压缩文件: {file_list}")
+        logger.debug(f"开始ZPAQ压缩文件: {file_list}")
         # 调用PAQ命令行工具（需预先安装PAQ）
         paq_path = os.path.join(model_path, zip_name)
         cmd = [
@@ -281,7 +336,7 @@ def paq_zip_model(model_path: str, model_dict: dict, zip_name:str|None=None)->st
         if os.path.exists(checksum_path):
             os.remove(checksum_path)
 
-        logger.debug(f"PAQ压缩输出: {result.stdout}")
+        logger.info(f"PAQ压缩输出: {result.stdout}")
         logger.info(f"PAQ压缩完成: {paq_path}")        
 
         return paq_path
@@ -310,12 +365,19 @@ def backup_zip(zip_path: str, backup_dir: str)->str|None:
     logger.info(f"开始备份压缩文件: {zip_path} 到目录: {backup_dir}")
     
     if not os.path.exists(backup_dir):
-        logger.info(f"创建备份目录: {backup_dir}")
+        logger.debug(f"创建备份目录: {backup_dir}")
         os.makedirs(backup_dir)
     try:
         zip_file = Path(zip_path)
-        backup_path = os.path.join(backup_dir, zip_file.name)
-        logger.debug(f"备份文件从 {zip_path} 到 {backup_path}")
+        # 计算zip_file的MD5，并在文件名中包含
+        md5_hash = calculate_md5(zip_path)
+        """
+        with open(zip_path, 'rb') as f:
+            md5_hash = hashlib.md5(f.read()).hexdigest()
+        """
+        new_zip_file = zip_file.with_name(f"{zip_file.stem}_{md5_hash}{zip_file.suffix}")
+        backup_path = os.path.join(backup_dir, new_zip_file.name)
+        logger.info(f"备份文件从 {zip_path} 到 {backup_path}")
         shutil.move(zip_path, backup_path)
     except Exception as e:
         logger.error(f"备份文件时发生错误: {e}")
@@ -325,18 +387,22 @@ def backup_zip(zip_path: str, backup_dir: str)->str|None:
     logger.info(f"备份完成，备份文件路径: {backup_path}")
     return backup_path
 
-def clean_temp_files(zip_dir: str, model_path:str)->None:
+def clean_temp_files(zip_dir: str, model_path:str, zip_name:str|None=None)->None:
     """
     清理临时目录
     :param zip_dir: 压缩文件路径
     :param model_path: 模型基础路径
     :return: default return None
     """
-    logger.info(f"开始清理临时目录: {zip_dir}")
+    logger.info(f"开始清理临时文件: {zip_dir}")
     if os.path.exists(zip_dir):
         if zip_dir != model_path:
             logger.info(f"删除临时目录: {zip_dir}")
             shutil.rmtree(zip_dir)
+        elif zip_name and os.path.exists(os.path.join(model_path, zip_name)):
+            # 删除zip文件
+            logger.info(f"删除临时zip文件: {os.path.join(model_path, zip_name)}")
+            os.remove(os.path.join(model_path, zip_name))
 
 if __name__ == "__main__":
     # 示例用法
