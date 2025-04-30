@@ -52,25 +52,26 @@ class BackupController:
                     model_versions = os.path.join(manifests_path, model)
                     if os.path.isdir(model_versions):
                         for version in os.listdir(model_versions):
-                            model_file = os.path.join(self.model_path, 'manifests', 'registry.ollama.ai', 'library', model, version)
-                            model_dict = self._get_model_detail_file(f"{model}:{version}", model_file)
-                            logger.debug(f"模型信息: {model_file}")
-                            if model_dict:
-                                self.model_data.add_model(LLMModel(**{
-                                    'model_path': self.model_path,
-                                    'name': f"{model}:{version}",
-                                    'description': f"{model}:{version}",
-                                    'llm': model,
-                                    'version': version,
-                                    'manifest': os.path.relpath(model_dict.get('model_file_path', ""), self.model_path),
-                                    'blobs': model_dict.get('digests', []),
-                                    'bk_status': None,
-                                    }))
-                                model_queue.put([f"{model}:{version}", f"backup_{model}_{version}.zip"])
-            except Exception as e:
-                logger.error(f"初始化模型信息时出错: {e}")
-                logger.error(traceback.format_exc())
-                _stop_event.set()
+                            try:
+                                model_file = os.path.join(self.model_path, 'manifests', 'registry.ollama.ai', 'library', model, version)
+                                model_dict = self._get_model_detail_file(f"{model}:{version}", model_file)
+                                logger.debug(f"模型信息: {model_file}")
+                                if model_dict:
+                                    self.model_data.add_model(LLMModel(**{
+                                        'model_path': self.model_path,
+                                        'name': f"{model}:{version}",
+                                        'description': f"{model}:{version}",
+                                        'llm': model,
+                                        'version': version,
+                                        'manifest': os.path.relpath(model_dict.get('model_file_path', ""), self.model_path),
+                                        'blobs': model_dict.get('digests', []),
+                                        'bk_status': None,
+                                        }))
+                                    model_queue.put([f"{model}:{version}", f"backup_{model}_{version}.zip"])
+                            except Exception as e:
+                                logger.error(f"初始化模型信息时出错: {e}")
+                                logger.error(traceback.format_exc())
+                                continue
             finally:
                 _stop_event.set()
 
@@ -82,7 +83,7 @@ class BackupController:
                     logger.warning("等待阶段一数据超时，退出检查任务")
                     return
 
-                while not _stop_event.is_set():
+                while not (_stop_event.is_set() and model_queue.empty()):
                     try:
                         model_name, zip_file = model_queue.get(block=True, timeout=1)
                         if model_name is None:
@@ -91,18 +92,21 @@ class BackupController:
                         backuped, zip_file = check_zip_file_integrity(dest_path)
                         self.model_data.update_backup_status(ModelBackupStatus(**{
                             'model_name': model_name,
-                            'backup_path': dest_path,
+                            'backup_path': os.path.dirname(zip_file) if zip_file else None,
                             'backup_status': backuped,
-                            'zip_file': zip_file,
+                            'zip_file': os.path.basename(zip_file) if zip_file else None,
+                            'zip_md5': None,
                         }))
                     except Empty:
                         if _stop_event.is_set():  # 检查是否应该退出
                             break
                         continue
+                    except Exception as e:
+                        logger.error(f"检查备份状态时出错: {e}")
+                        logger.error(traceback.format_exc())
+                        continue
                     
-                logger.info("第二阶段：备份状态检查完成")                
-            except Exception as e:
-                logger.error(f"检查备份状态时出错: {e}")
+                logger.info("第二阶段：备份状态检查完成") 
             finally:
                 # 确保在退出时关闭线程池
                 self.isLoading = False

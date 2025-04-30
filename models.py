@@ -11,10 +11,10 @@ logger = setup_logging(log_level=logging.DEBUG, log_tag="models")
 
 class ModelBackupStatus(BaseModel):
     model_name: str
-    backup_path: str
+    backup_path: str|None = None
     backup_status: bool
-    zip_file: str
-    zip_md5: str
+    zip_file: str|None = None
+    zip_md5: str|None = None
 
 class LLMModel(BaseModel):
     model_path: str
@@ -104,6 +104,7 @@ class ModelData:
 
     def update_backup_status(self, status: ModelBackupStatus) -> None:
         """更新备份状态并通知观察者"""
+        logger.debug(f"更新备份状态: {status}")  # 调试日志，确保正确更新备份状态
         model_name = status.model_name
         if status.backup_status:
             zip_file = status.zip_file

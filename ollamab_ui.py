@@ -140,7 +140,7 @@ class BackupApp:
         region = self.tree.identify("region", event.x, event.y)
         column = self.tree.identify_column(event.x)
 
-        logger.debug(f"点击位置: {region}, 列: {column}")  # 调试日志，确保正确获取点击位置和列ID
+        #logger.debug(f"点击位置: {region}, 列: {column}")  # 调试日志，确保正确获取点击位置和列ID
         
         # 仅在第一列（复选框列）响应点击
         if region == 'cell' and column == '#1':
@@ -175,15 +175,20 @@ class BackupApp:
         self.tree.insert(item, 'end', values=('',), 
                         text=model.manifest,
                         tags=('childrow'))
-        for digest in model.get('digests', []):
+        for digest in model.blobs:
             self.tree.insert(item, 'end', values=('',), text=os.path.join('blobs', digest),
                             tags=('childrow'))
+        self.item_count += 1
 
     def delete_model(self, model: LLMModel)->None:
+        found = False
         for item in self.tree.get_children():
             if self.tree.item(item, 'text') == model.name:
                 self.tree.delete(item)
+                found = True
                 break
+        if found:
+            self.item_count -= 1
 
     def update_model(self, model: LLMModel)->None:
         found = False
@@ -250,14 +255,7 @@ class BackupApp:
         if path:
             self.model_path_var.set(path)
             self.model_path = path  # 更新实例变量
-            self.load_models()  # 重新加载模型    
-    
-    def update_backup_status(self, model_name, backup_status: str)->None:
-        self.model_data.update_backup_status(model_name, backup_status)
-
-    def update_progress(self, progress: float):
-        """更新进度条状态"""
-        self.master.after(0, lambda: self._update_progress_ui(progress))    
+            self.load_models()  # 重新加载模型  
 
     def update_treeview(self):
         self.tree.delete(*self.tree.get_children())
@@ -324,6 +322,7 @@ class Obeserver(ModelObserver):
     def notify_update_model(self, model: LLMModel) -> None:
         self.handler.queue.put(("update_model", model))
     def notify_update_backup_status(self, status: ModelBackupStatus) -> None:
+        logger.debug(f"通知更新备份状态: {status}")
         self.handler.queue.put(("update_backup_status", status))
     def notify_initialized(self, initialized: bool) -> None:
         self.handler.queue.put(("set_initialized", initialized))
