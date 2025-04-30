@@ -6,7 +6,7 @@ import os
 import threading
 import traceback
 from ollamab_controller import BackupController
-
+from theme import Theme, StyleConfigurator
 
 # 初始化日志配置
 logger = setup_logging(log_level=logging.DEBUG)
@@ -32,7 +32,7 @@ class BackupApp:
         if not self.model_path or not os.path.exists(self.model_path):
             self.prompt_model_path()
         
-        self.controller = BackupController(self.model_path, self.default_backup_path)
+        self.controller = BackupController(self.model_path, self.default_backup_path)        
 
         # 初始化缓存锁和模型缓存
         self.cache_lock = threading.Lock()
@@ -40,137 +40,10 @@ class BackupApp:
 
         # 初始化UI组件
         self.create_widgets()
-        self.configure_style_warm()
+        #self.configure_style_warm()
+        StyleConfigurator.configure_style(self, Theme.WARM)
         # 初始化数据内容
-        self.load_models()
-
-    def configure_style(self)->None:
-        # 创建样式对象        
-        style = ttk.Style()
-    
-        # 强制使用 'clam' 主题（支持完整自定义）
-        style.theme_use("clam")
-
-        logger.debug("可用主题:", style.theme_names())
-        logger.debug("当前主题:", style.theme_use())
-        
-        # 基础Treeview样式
-        style.configure('Treeview',
-                    background='white',
-                    rowheight=25,
-                    fieldbackground='white',
-                    bordercolor='#e0e0e0',
-                    borderwidth=1)
-        # 表头样式
-        style.configure('Treeview.Heading',
-                    background='#f0f0f0',
-                    foreground='black',
-                    font=('Arial', 10, 'bold'),
-                    relief='raised',
-                    padding=5)
-
-        # 行样式（必须使用.tag_configure方式）
-        self.tree.tag_configure('oddrow', background='white')
-        self.tree.tag_configure('evenrow', background='#f5f5f5')
-        self.tree.tag_configure('childrow', background='#e9e9e9')
-
-        # 选中状态映射
-        style.map("Treeview",
-                background=[('selected', '#0078d7')],
-                foreground=[('selected', 'white')])
-    
-    def configure_style_warm(self) -> None:
-        style = ttk.Style()
-        style.theme_use('clam')  # 必须使用clam主题才能完全自定义
-        
-        # 全局字体设置
-        default_font = ('Microsoft YaHei', 10)  # 可根据系统调整
-        
-        # 基础框架样式（浅米色背景）
-        style.configure('TFrame', 
-                    background='#FFF5E6',  # 浅米色
-                    borderwidth=2,
-                    relief='groove',
-                    bordercolor='#FFD6A8')
-        
-        # 按钮样式（橙色系）
-        style.configure('TButton',
-                    background='#FFB347',  # 阳光橙
-                    foreground='white',
-                    font=default_font,
-                    padding=5,
-                    relief='raised',
-                    bordercolor='#FF9500')
-        style.map('TButton',
-                background=[('active', '#FF9500'),  # 按下时变深
-                            ('disabled', '#FFD699')])  # 禁用时变浅
-        
-        # 输入框样式
-        style.configure('TEntry',
-                    fieldbackground='white',
-                    foreground='#5A4A3A',  # 咖啡色文字
-                    bordercolor='#FFD6A8',
-                    insertcolor='#FF9500',  # 光标橙色
-                    padding=5)
-        
-        # 标签样式
-        style.configure('TLabel',
-                    background='#FFF5E6',
-                    foreground='#5A4A3A',
-                    font=default_font,
-                    padding=(8, 5, 8, 5))
-        
-        # 滚动条样式
-        style.configure('Vertical.TScrollbar',
-                    background='#FFA726',
-                    troughcolor='#FFD6A8',
-                    gripcount=1,
-                    arrowsize=12)
-        
-        # 树形视图样式（温暖风格）
-        style.configure('Treeview',
-                    background='#FFF9F0',  # 奶油白
-                    foreground='#5A4A3A',
-                    rowheight=28,
-                    fieldbackground='#FFF9F0',
-                    bordercolor='#FFD6A8',
-                    font=default_font,
-                    borderwidth=0,
-                    highlightthickness=0,
-                    padding=(8, 10))
-        
-        # 树形视图表头
-        style.configure('Treeview.Heading',
-                    background='#FFB347',
-                    foreground='white',
-                    font=('Microsoft YaHei', 10, 'bold'),
-                    relief='flat',
-                    padding=(8, 5, 8, 5))                    
-        style.map('Treeview.Heading',
-             background=[('active', '#FFB347'),  # 悬停状态
-                        ('!active', '#FFB347')], # 正常状态
-             relief=[('active', 'flat'),
-                    ('!active', 'flat')])
-        
-        # 树形视图行样式
-        if hasattr(self, 'tree'):
-            self.tree.tag_configure('oddrow', background='#FFF9F0')  # 奶油白
-            self.tree.tag_configure('evenrow', background='#FFE8D6') # 淡珊瑚
-            self.tree.tag_configure('childrow', background='#FFD6A8') # 浅橙
-        style.configure('Treeview.oddrow', background='#FFF9F0')
-        style.configure('Treeview.evenrow', background='#FFE8D6')
-        style.configure('Treeview.childrow', background='#FFD6A8')
-        
-        # 选中状态
-        style.map('Treeview',
-                background=[('selected', '#E67E22')],  # 南瓜橙
-                foreground=[('selected', 'white')])
-        
-        # PanedWindow分隔线样式
-        style.configure('TPanedwindow', 
-                    background='#FFD6A8',
-                    sashwidth=8,
-                    sashrelief='flat')
+        self.load_models()    
 
     def create_widgets(self)->None:
         # 主框架
@@ -344,14 +217,14 @@ class BackupApp:
         for model in os.listdir(manifests_path):
             model_versions = os.path.join(manifests_path, model)
             if os.path.isdir(model_versions):
-                for version in os.listdir(model_versions):                    
+                for version in os.listdir(model_versions): 
                     # 添加文件子节点
                     model_file = os.path.join(self.model_path, 'manifests', 'registry.ollama.ai', 'library', model, version)
                     model_dict = self.controller.get_model_detail_file(f"{model}:{version}", model_file)
                     #logger.debug(f"模型文件: {json.dumps(model_dict, indent=2)}")
                     if not model_dict:
                         continue
-                    value = self.CHECKED_SYMBOL #self.BACKUPED_SYMBOL if self.check_backup_status(f"backup_{model}_{version}.zip") else self.UNCHECKED_SYMBOL
+                    value = self.CHECKING_SYMBOL #self.BACKUPED_SYMBOL if self.check_backup_status(f"backup_{model}_{version}.zip") else self.UNCHECKED_SYMBOL
                     item = self.tree.insert('', 'end', text=f"{model}:{version}", values=(value,),
                             tags=('oddrow' if (i % 2) == 0 else 'evenrow'))
                     logger.debug(f"已加载模型: {model}:{version}")
