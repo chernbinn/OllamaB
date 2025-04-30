@@ -6,7 +6,16 @@ import os
 import threading
 import traceback
 from ollamab_controller import BackupController
+from models import (
+    ModelBackupStatus, 
+    ModelData, 
+    ModelObserver,
+    LLMModel
+)
 from theme import Theme, StyleConfigurator
+import queue
+from threading import Thread
+
 
 # 初始化日志配置
 logger = setup_logging(log_level=logging.DEBUG)
@@ -25,14 +34,22 @@ class BackupApp:
         self.UNCHECKED_SYMBOL = '[ ]'
         self.BACKUPED_SYMBOL = '[已备份]'
         self.CHECKING_SYMBOL = '[校验中]'
+        self.BACKUPED_ERROR_SYMBOL = '[异常]'
 
-        self.default_backup_path = r"F:\llm_models\ollama_modes_backup"        
+        self.default_backup_path = r"F:\llm_models\ollama_modes_backup"
+        self.default_model_path = r"F:\llm_models\ollama_modes"
         # 环境变量检测
         self.model_path = os.getenv("OLLAMA_MODELS")
         if not self.model_path or not os.path.exists(self.model_path):
-            self.prompt_model_path()
+            self.model_path = self.default_model_path
         
-        self.controller = BackupController(self.model_path, self.default_backup_path)        
+        self.controller = BackupController(self.model_path, self.default_backup_path)
+        # 初始化数据模型和观察者
+        self.model_data = ModelData()
+        self.item_count = 0
+        self.uiHandler = UIUpdateHandler(self)
+        self.observer = Obeserver(self.uiHandler)
+        self.model_data.add_observer(self.observer)
 
         # 初始化缓存锁和模型缓存
         self.cache_lock = threading.Lock()
@@ -135,6 +152,54 @@ class BackupApp:
             
             model_name = self.tree.item(item, 'text')
             logger.debug(f"复选框状态更新：{model_name} -> {new_state}")
+    
+    def _get_backup_value(self, status: ModelBackupStatus)->str:
+        if not status:
+            return self.CHECKING_SYMBOL
+
+        backuped = status.backup_status
+        zip_file = status.zip_file
+        if backuped:
+            if zip_file:
+                return self.BACKUPED_SYMBOL
+        elif zip_file:
+                return self.BACKUPED_ERROR_SYMBOL
+        else:
+            return self.UNCHECKED_SYMBOL
+
+    def add_model(self, model: LLMModel)->None:
+        logger.debug(f"添加模型: {model.name}")  # 调试日志，确保正确获取模型名称
+        value = self.CHECKING_SYMBOL
+        item = self.tree.insert('', 'end', text=model.name, values=(value,),
+                        tags=('oddrow' if (self.item_count % 2) == 0 else 'evenrow'))
+        self.tree.insert(item, 'end', values=('',), 
+                        text=model.manifest,
+                        tags=('childrow'))
+        for digest in model.get('digests', []):
+            self.tree.insert(item, 'end', values=('',), text=os.path.join('blobs', digest),
+                            tags=('childrow'))
+
+    def delete_model(self, model: LLMModel)->None:
+        for item in self.tree.get_children():
+            if self.tree.item(item, 'text') == model.name:
+                self.tree.delete(item)
+                break
+
+    def update_model(self, model: LLMModel)->None:
+        found = False
+        for item in self.tree.get_children():
+            if self.tree.item(item, 'text') == model.name:
+                value = self._get_backup_value(model.bk_status)
+                self.tree.item(item, values=(value,))
+                found = True
+                break
+
+    def update_backup_status(self, status: ModelBackupStatus)->None:
+        for item in self.tree.get_children():
+            if self.tree.item(item, 'text') == status.model_name:
+                value = self._get_backup_value(status)
+                self.tree.item(item, values=(value,))
+                break
 
     def start_backup(self):
         if not self.backup_path_var.get():
@@ -173,7 +238,6 @@ class BackupApp:
         path = filedialog.askdirectory(title="选择模型根目录")
         if path:
             self.model_path = path
-            self.load_models()
 
     def choose_backup_dir(self):
         path = filedialog.askdirectory(title="选择备份模型目录")
@@ -189,52 +253,31 @@ class BackupApp:
             self.load_models()  # 重新加载模型    
     
     def update_backup_status(self, model_name, backup_status: str)->None:
-        def update_backup_status_ui(model_name, backup_status):
-            for item in self.tree.get_children():
-                if self.tree.item(item, 'text') == model_name:
-                    current_values = list(self.tree.item(item, 'values'))
-                    current_values[0] = backup_status
-                    self.tree.item(item,
-                                    values=tuple(current_values),
-                                    tags=self.tree.item(item, 'tags'))
-                    logger.debug(f"更新状态: {model_name} -> {backup_status}")
-                    return
-            logger.error(f"未找到模型: {model_name}")
-        # 在UI线程中更新状态
-        try:
-            self.master.after(0, lambda: update_backup_status_ui(model_name, backup_status))
-        except:
-            pass
+        self.model_data.update_backup_status(model_name, backup_status)
+
+    def update_progress(self, progress: float):
+        """更新进度条状态"""
+        self.master.after(0, lambda: self._update_progress_ui(progress))    
+
+    def update_treeview(self):
+        self.tree.delete(*self.tree.get_children())
+        for i, model in enumerate(self.model_data.models):
+            model_name = f"{model['name']}:{model['version']}"
+            status = self.model_data.get_backup_status(model_name)
+            item = self.tree.insert('', 'end', text=model_name, values=(status,),
+                            tags=('oddrow' if (i % 2) == 0 else 'evenrow'))
+            self.tree.insert(item, 'end', values=('',), 
+                            text=os.path.join('manifests', 'registry.ollama.ai', 'library', model['name'], model['version']),
+                            tags=('childrow'))
+            for digest in model.get('digests', []):
+                self.tree.insert(item, 'end', values=('',), text=os.path.join('blobs', digest),
+                                tags=('childrow'))
 
     def load_models(self):
-        manifests_path = os.path.join(self.model_path, 'manifests', 'registry.ollama.ai', 'library')
-        if not os.path.exists(manifests_path):
-            logger.error(f"模型根目录结构异常: {manifests_path}")
-            messagebox.showwarning("路径错误", "模型存储目录结构不完整，请重新选择正确路径")
-            return
-
-        i = 0
-        for model in os.listdir(manifests_path):
-            model_versions = os.path.join(manifests_path, model)
-            if os.path.isdir(model_versions):
-                for version in os.listdir(model_versions): 
-                    # 添加文件子节点
-                    model_file = os.path.join(self.model_path, 'manifests', 'registry.ollama.ai', 'library', model, version)
-                    model_dict = self.controller.get_model_detail_file(f"{model}:{version}", model_file)
-                    #logger.debug(f"模型文件: {json.dumps(model_dict, indent=2)}")
-                    if not model_dict:
-                        continue
-                    value = self.CHECKING_SYMBOL #self.BACKUPED_SYMBOL if self.check_backup_status(f"backup_{model}_{version}.zip") else self.UNCHECKED_SYMBOL
-                    item = self.tree.insert('', 'end', text=f"{model}:{version}", values=(value,),
-                            tags=('oddrow' if (i % 2) == 0 else 'evenrow'))
-                    logger.debug(f"已加载模型: {model}:{version}")
-                    self.tree.insert(item, 'end', values=('',), 
-                                    text=os.path.join('manifests', 'registry.ollama.ai', 'library', model, version),
-                                    tags=('childrow'))
-                    for digest in model_dict.get('digests', []):
-                        self.tree.insert(item, 'end', values=('',), text=os.path.join('blobs', digest),
-                                        tags=('childrow'))
-                    i += 1  
+        # 注册进度更新观察者
+        #self.model_data.add_observer(lambda: self.update_progress(self.model_data.loading_progress))
+        # 启动异步加载
+        self.controller.start_async_loading()
 
     def thread_safe_messagebox(self, title, message, message_type="info"):
         """线程安全的消息框显示"""
@@ -248,6 +291,42 @@ class BackupApp:
                     self.master.after(0, lambda: messagebox.showwarning(title, message))
         except:
             pass
+
+class UIUpdateHandler:
+    def __init__(self, backup_app):
+        self.queue = queue.Queue()
+        self.backup_app = backup_app
+        self.running = True
+        Thread(target=self.process_queue, daemon=True).start()
+    
+    def process_queue(self):
+        while self.running:
+            try:
+                action, payload = self.queue.get(block=True, timeout=1)
+                method = getattr(self.backup_app, action)
+                if callable(method):
+                    method(payload)
+            except AttributeError:
+                logger.error(f"无效的UI方法: {action}")
+            except (queue.Empty, ValueError):
+                continue
+            except Exception as e:
+                logger.error(f"执行 {action} 失败: {e}")
+    
+class Obeserver(ModelObserver):
+    def __init__(self, handler: UIUpdateHandler):
+        self.handler = handler
+    def notify_add_model(self, model: LLMModel) -> None:
+        logger.debug(f"通知添加模型: {model}")
+        self.handler.queue.put(("add_model", model))
+    def notify_delete_model(self, model: LLMModel) -> None:
+        self.handler.queue.put(("delete_model", model))
+    def notify_update_model(self, model: LLMModel) -> None:
+        self.handler.queue.put(("update_model", model))
+    def notify_update_backup_status(self, status: ModelBackupStatus) -> None:
+        self.handler.queue.put(("update_backup_status", status))
+    def notify_initialized(self, initialized: bool) -> None:
+        self.handler.queue.put(("set_initialized", initialized))
 
 if __name__ == "__main__":
     root = tk.Tk()
