@@ -1,20 +1,12 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import logging
+from logging_config import setup_logging
 import os
 import threading
 import traceback
-from ollamab import (
-    clean_temp_files,
-    parse_model_file,     
-    backup_zip, 
-    copy_and_zip_model,  # 拷贝到临时文件在进行普通zip压缩
-    zip_model,  # 直接对文件压缩，采用ZIP_LZMA t9高压缩算法
-    paq_zip_model, # zpaq压缩算法，t5效果最好，但是太耗内存，大文件无法执行压缩
-    check_zip_file_integrity # 检查zip压缩文件完整性
-)
-import logging
-from logging_config import setup_logging
-import json
+from ollamab_controller import BackupController
+
 
 # 初始化日志配置
 logger = setup_logging(log_level=logging.DEBUG)
@@ -24,7 +16,7 @@ windll.shcore.SetProcessDpiAwareness(1)  # 解决高DPI缩放问题
 
 class BackupApp:
     def __init__(self, master):
-        self.master = master
+        self.master = master        
         master.title("Ollama模型备份工具")
         master.geometry("1200x800")
 
@@ -32,12 +24,15 @@ class BackupApp:
         self.CHECKED_SYMBOL = '[Y]'
         self.UNCHECKED_SYMBOL = '[ ]'
         self.BACKUPED_SYMBOL = '[已备份]'
-        self.default_backup_path = r"F:\llm_models\ollama_modes_backup"
-        
+        self.CHECKING_SYMBOL = '[校验中]'
+
+        self.default_backup_path = r"F:\llm_models\ollama_modes_backup"        
         # 环境变量检测
         self.model_path = os.getenv("OLLAMA_MODELS")
         if not self.model_path or not os.path.exists(self.model_path):
             self.prompt_model_path()
+        
+        self.controller = BackupController(self.model_path, self.default_backup_path)
 
         # 初始化缓存锁和模型缓存
         self.cache_lock = threading.Lock()
@@ -162,6 +157,9 @@ class BackupApp:
             self.tree.tag_configure('oddrow', background='#FFF9F0')  # 奶油白
             self.tree.tag_configure('evenrow', background='#FFE8D6') # 淡珊瑚
             self.tree.tag_configure('childrow', background='#FFD6A8') # 浅橙
+        style.configure('Treeview.oddrow', background='#FFF9F0')
+        style.configure('Treeview.evenrow', background='#FFE8D6')
+        style.configure('Treeview.childrow', background='#FFD6A8')
         
         # 选中状态
         style.map('Treeview',
@@ -286,47 +284,11 @@ class BackupApp:
         threading.Thread(target=self.run_backup, args=(selected_models,)).start()
 
     def run_backup(self, models):
-        logger.info(f"开始备份模型: {models}")
         try:
-            for model in models:
-                logger.info(f"备份模型: {model}")
-                model_dict = self.get_model_detail_file(model)
-                if not model_dict:
-                    # 新增错误处理流程
-                    model_file = os.path.join(self.model_path,'manifests','registry.ollama.ai', 'library', *model.split(':', 1))
-                    logger.error(f"模型{model}的文件{model_file}缺失")
-                    self.thread_safe_messagebox("文件缺失", f"模型{model}的文件{model_file}不存在！", "error")
-                    # 删除树节点model
-                    self.tree.delete(model)
-                    continue
-
-                backup_dir = self.backup_path_var.get()
-                seps = model_dict["model_file_path"].split(os.sep)
-                zip_name = "backup_" + ((seps[-2]+"_") if seps[-2] else '') + seps[-1] + ".zip"
-                # zip_name = "backup_" + ((seps[-2]+"_") if seps[-2] else '') + seps[-1] + ".zpaq"
-                logger.debug(f"zip_name: {zip_name}")
-                # dest_path = os.path.join(backup_dir, zip_name)
-                if self.check_backup_status(zip_name):
-                    logger.info(f"备份文件已存在: {dest_path}")
-                    self.thread_safe_messagebox("文件存在", f"备份文件{dest_path}已存在，不再备份！", "warning")
-                    self.update_backup_status(model, self.BACKUPED_SYMBOL)
-                    continue
-                # 开始备份
-                #zip_path = copy_and_zip_model(self.model_path, model_dict, zip_name)
-                zip_path = zip_model(self.model_path, model_dict, zip_name)
-                #zip_path = paq_zip_model(self.model_path, model_dict, zip_name)
-                
-                if zip_path:
-                    zip_path = backup_zip(zip_path, backup_dir)
-                    logger.info(f"备份完成: {zip_path}")
-                    self.thread_safe_messagebox("备份完成", f"{model} 备份完成：{zip_path}")
-                    self.update_backup_status(model, self.BACKUPED_SYMBOL)
-            logger.info("所有模型备份完成！")
-            self.thread_safe_messagebox("备份完成", f"所有模型备份完成！", "info")
+            self.controller.run_backup(models)
         except Exception as e:
             logger.error(f"备份过程中发生错误: \n{traceback.format_exc()}")
             self.thread_safe_messagebox("备份错误", f"备份失败！", "error")
-            clean_temp_files(self.model_path, self.model_cache)
         finally:
             try:
                 if self.master and self.master.winfo_exists():
@@ -351,21 +313,7 @@ class BackupApp:
         if path:
             self.model_path_var.set(path)
             self.model_path = path  # 更新实例变量
-            self.load_models()  # 重新加载模型
-
-    def check_backup_status(self, backup_file: str)->bool:
-        backup_dir = self.backup_path_var.get()
-        if not backup_dir or not os.path.exists(backup_dir):
-            return False
-        dest_path = os.path.join(backup_dir, backup_file)
-        backupde, zip_file = check_zip_file_integrity(dest_path)
-        if backupde and zip_file:
-            return True
-        elif not backupde and zip_file:
-            thread_safe_messagebox("文件损坏", f"备份文件{zip_file}校验失败，手动检查！", "warning")
-            return False
-        else:
-            return False
+            self.load_models()  # 重新加载模型    
     
     def update_backup_status(self, model_name, backup_status: str)->None:
         def update_backup_status_ui(model_name, backup_status):
@@ -399,11 +347,11 @@ class BackupApp:
                 for version in os.listdir(model_versions):                    
                     # 添加文件子节点
                     model_file = os.path.join(self.model_path, 'manifests', 'registry.ollama.ai', 'library', model, version)
-                    model_dict = self.get_model_detail_file(f"{model}:{version}", model_file)
+                    model_dict = self.controller.get_model_detail_file(f"{model}:{version}", model_file)
                     #logger.debug(f"模型文件: {json.dumps(model_dict, indent=2)}")
                     if not model_dict:
                         continue
-                    value = self.BACKUPED_SYMBOL if self.check_backup_status(f"backup_{model}_{version}.zip") else self.UNCHECKED_SYMBOL
+                    value = self.CHECKED_SYMBOL #self.BACKUPED_SYMBOL if self.check_backup_status(f"backup_{model}_{version}.zip") else self.UNCHECKED_SYMBOL
                     item = self.tree.insert('', 'end', text=f"{model}:{version}", values=(value,),
                             tags=('oddrow' if (i % 2) == 0 else 'evenrow'))
                     logger.debug(f"已加载模型: {model}:{version}")
@@ -414,52 +362,6 @@ class BackupApp:
                         self.tree.insert(item, 'end', values=('',), text=os.path.join('blobs', digest),
                                         tags=('childrow'))
                     i += 1  
-
-    def get_model_detail_file(self, model_name, model_file=None):
-        # 从缓存中获取模型信息
-        logger.debug(f"获取模型信息: {model_name} {model_file}")  # 调试日志，确保正确获取模型名称
-        with self.cache_lock:
-            model_dict = self.model_cache.get(model_name)
-        if model_dict:
-            return model_dict
-
-        # 解析模型文件
-        if not model_file:
-            model_parts = model_name.lsplit(':', 1)
-            model_file = os.path.join(self.model_path,'manifests','registry.ollama.ai', 'library', *model_parts)
-        logger.debug(f"解析模型文件: {model_file}")  # 调试日志，确保正确获取模型文件路径
-        if not os.path.exists(model_file):
-            # 深度遍历library目录结构寻找匹配路径
-            found = False
-            library_path = os.path.join(self.model_path, 'manifests', 'registry.ollama.ai', 'library')
-            for root, dirs, files in os.walk(library_path):
-                # 跳过非末级目录
-                if dirs:
-                    continue
-                
-                # 逆向构建模型名称：父目录名/当前目录名
-                path_parts = os.path.relpath(root, library_path).split(os.sep)
-                if len(path_parts) == 1:
-                    current_model = path_parts[0]
-                else:
-                    current_model = f"{path_parts[-2]}:{path_parts[-1]}"
-
-                if current_model == model_name:
-                    model_file = root
-                    found = True
-                    break
-
-            if not found:
-                logger.error(f"未找到匹配的模型路径: {model_name}")
-                messagebox.showerror("错误", f"未找到匹配的模型路径: {model_name}")
-                return None
-
-        model_dict = parse_model_file(model_file)
-        if model_dict:
-            # 缓存模型信息
-            with self.cache_lock:
-                self.model_cache[model_name] = model_dict
-        return model_dict
 
     def thread_safe_messagebox(self, title, message, message_type="info"):
         """线程安全的消息框显示"""
