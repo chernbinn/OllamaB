@@ -64,7 +64,7 @@ class BackupApp:
         #self.configure_style_warm()
         StyleConfigurator.configure_style(self, Theme.WARM)
         # 初始化数据内容
-        self.load_models()    
+        self.controller.start_async_loading()    
 
     def create_widgets(self)->None:
         # 主框架
@@ -81,6 +81,7 @@ class BackupApp:
 
         ttk.Label(model_path_frame, text="模型路径:").pack(side=tk.LEFT, padx=(0,5))
         self.model_path_var = tk.StringVar(value=self.model_path)
+        self.model_path_var.trace_add('write', lambda *_: self._update_model_path())
         ttk.Entry(model_path_frame, 
                 textvariable=self.model_path_var,
                 style='TEntry').pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0,5))
@@ -96,6 +97,7 @@ class BackupApp:
 
         ttk.Label(backup_path_frame, text="备份路径:").pack(side=tk.LEFT, padx=(0,5))
         self.backup_path_var = tk.StringVar(value=self.default_backup_path)
+        self.backup_path_var.trace_add('write', lambda *_: self._update_backup_path())
         ttk.Entry(backup_path_frame, 
                 textvariable=self.backup_path_var,
                 style='TEntry').pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0,5))
@@ -243,14 +245,22 @@ class BackupApp:
             except:
                 pass
 
+    def _update_model_path(self):
+        self.model_path = self.model_path_var.get()
+        self.controller.chdir_path(self.model_path, self.backup_path)
+        self.controller.start_async_loading()
+
+    def _update_backup_path(self):
+        self.backup_path = self.backup_path_var.get()
+        self.controller.chdir_path(self.model_path, self.backup_path)
+        self.controller.async_recheck_backup_status()
+
     def choose_backup_dir(self):
         path = filedialog.askdirectory(title="选择备份模型目录")
         if path:
             path = str(Path(path))
             self.backup_path_var.set(path)
             self.backup_path = path  # 更新实例变量
-            self.controller.chdir_path(self.model_path, self.backup_path)
-            self.controller.async_recheck_backup_status()
     
     def choose_model_dir(self):
         """选择模型路径"""
@@ -259,7 +269,6 @@ class BackupApp:
             path = str(Path(path))
             self.model_path_var.set(path)
             self.model_path = path  # 更新实例变量
-            self.load_models()  # 重新加载模型  
 
     def update_treeview(self):
         self.tree.delete(*self.tree.get_children())
