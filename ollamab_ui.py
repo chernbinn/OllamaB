@@ -15,10 +15,11 @@ from models import (
 from theme import Theme, StyleConfigurator
 import queue
 from threading import Thread
+from pathlib import Path
 
 
 # 初始化日志配置
-logger = setup_logging(log_level=logging.DEBUG)
+logger = setup_logging(log_level=logging.INFO)
 
 from ctypes import windll
 windll.shcore.SetProcessDpiAwareness(1)  # 解决高DPI缩放问题
@@ -42,8 +43,11 @@ class BackupApp:
         self.model_path = os.getenv("OLLAMA_MODELS")
         if not self.model_path or not os.path.exists(self.model_path):
             self.model_path = self.default_model_path
+        self.backup_path = os.getenv("OLLAMA_BACKUP_PATH")
+        if not self.backup_path:
+            self.backup_path = self.default_backup_path
         
-        self.controller = BackupController(self.model_path, self.default_backup_path)
+        self.controller = BackupController(self.model_path, self.backup_path)
         # 初始化数据模型和观察者
         self.model_data = ModelData()
         self.item_count = 0
@@ -239,20 +243,20 @@ class BackupApp:
             except:
                 pass
 
-    def prompt_model_path(self):
-        path = filedialog.askdirectory(title="选择模型根目录")
-        if path:
-            self.model_path = path
-
     def choose_backup_dir(self):
         path = filedialog.askdirectory(title="选择备份模型目录")
         if path:
+            path = str(Path(path))
             self.backup_path_var.set(path)
+            self.backup_path = path  # 更新实例变量
+            self.controller.chdir_path(self.model_path, self.backup_path)
+            self.controller.async_recheck_backup_status()
     
     def choose_model_dir(self):
         """选择模型路径"""
         path = filedialog.askdirectory(title="选择模型存储目录")
         if path:
+            path = str(Path(path))
             self.model_path_var.set(path)
             self.model_path = path  # 更新实例变量
             self.load_models()  # 重新加载模型  
@@ -275,6 +279,7 @@ class BackupApp:
         # 注册进度更新观察者
         #self.model_data.add_observer(lambda: self.update_progress(self.model_data.loading_progress))
         # 启动异步加载
+        self.controller.chdir_path(self.model_path, self.backup_path)
         self.controller.start_async_loading()
 
     def thread_safe_messagebox(self, title, message, message_type="info"):

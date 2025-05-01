@@ -121,7 +121,11 @@ class ModelData:
     @property
     def models(self) -> List[LLMModel]:
         """获取所有模型"""        
-        return copy.deepcopy(self._models)  # 使用深拷贝返回副本防止外部修改
+        return copy.deepcopy(self._models.values())  # 使用深拷贝返回副本防止外部修改
+    
+    def get_model(self, model_name: str) -> Optional[LLMModel]:
+        """获取指定模型"""
+        return self._models.get(model_name, None)
 
     @property
     def initialized(self) -> bool:
