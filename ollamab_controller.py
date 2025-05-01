@@ -44,7 +44,7 @@ class BackupController:
             self.backup_path = backup_path
 
     def start_async_loading(self) -> bool:
-        """启动异步数据加载"""
+        """启动异步数据加载"""        
         return AsyncLoad.load_models(self.model_path, self.backup_path)
     
     def async_recheck_backup_status(self) -> bool:
@@ -161,6 +161,7 @@ class AsyncLoad:
             logger.warning("数据加载任务正在进行中，跳过启动")
             return
         cls.isLoading = True
+        cls.model_data.initialized = False
         cls.init(model_path, backup_path)
         # 启动阶段一任务（模型信息加载）
         init_thread = threading.Thread(
@@ -179,16 +180,14 @@ class AsyncLoad:
     
     @classmethod
     def check_backup_status(cls, model_path:str, backup_path: str)->bool:
+        if not backup_dir or not os.path.exists(backup_dir):
+            return True
         if cls.isLoading:
             logger.warning("备份状态检查任务正在进行中，跳过启动")
             return False
         cls.isLoading = True
-        backup_dir = self.backup_path
-        if not backup_dir or not os.path.exists(backup_dir):
-            return True
-        cls.backup_path = backup_path
-        if not cls.initialized:
-            cls.init(cls.model_path, backup_path)
+        self.model_data.process_event = ProcessStatus(event=None, message="检查备份状态中...")
+        cls.init(model_path, backup_path)
         init_thread = threading.Thread(
             target=cls._get_models_task,
             args=(model_queue,),
@@ -249,7 +248,7 @@ class AsyncLoad:
                             logger.error(traceback.format_exc())
                             continue
         finally:
-            cls._stop_event.set()
+            cls._stop_event.set()            
             logger.info("第一阶段：模型信息初始化完成")
 
     @classmethod
@@ -288,6 +287,7 @@ class AsyncLoad:
             # 确保在退出时关闭线程池
             cls.isLoading = False
             logger.info("第二阶段：备份状态检查完成")
+            cls.model_data.initialized = True
 
     @classmethod
     def _get_model_detail_file(cls, model_name, model_file:str=None, model_path:str=None)->ModelDatialFile|None:

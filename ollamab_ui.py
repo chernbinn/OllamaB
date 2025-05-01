@@ -1,3 +1,4 @@
+from ast import main
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import logging
@@ -10,7 +11,9 @@ from models import (
     ModelBackupStatus, 
     ModelData, 
     ModelObserver,
-    LLMModel
+    LLMModel,
+    ProcessStatus,
+    ProcessEvent
 )
 from theme import Theme, StyleConfigurator
 import queue
@@ -141,6 +144,12 @@ class BackupApp:
         # 添加选中项变更事件
         # self.tree.bind('<<TreeviewOpen>>', self.update_node_status)
 
+        # 添加状态栏，状态栏绑定变量
+        self.status_var = tk.StringVar(value="加载中")
+        #self.status_var.trace_add('write', lambda *_: self._update_status_bar())
+        self.status_bar = ttk.Label(main_frame, textvariable=self.status_var, anchor=tk.W, style='TLabel')
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)        
+
     def toggle_checkbox(self, event:any)->None:
         # 获取点击位置的列ID
         region = self.tree.identify("region", event.x, event.y)
@@ -255,6 +264,23 @@ class BackupApp:
         self.controller.chdir_path(self.model_path, self.backup_path)
         self.controller.async_recheck_backup_status()
 
+    def set_initialized(self, initialized: bool)->None:
+        self.initialized = initialized
+        if initialized:
+            self.status_var.set("就绪")
+        else:
+            self.status_var.set("加载中...")
+    
+    def show_process_status(self, status: ProcessStatus)->None:
+        if status.event == ProcessEvent.WINDOW_INFO:
+            self.thread_safe_messagebox("提示", status.message, "info")
+        elif status.event == ProcessEvent.WINDOW_ERR:
+            self.thread_safe_messagebox("错误", status.message, "error")
+        elif status.event == ProcessEvent.WINDOW_WAR:
+            self.thread_safe_messagebox("警告", status.message, "warning")
+        else:
+            self.status_var.set(status.message)
+
     def choose_backup_dir(self):
         path = filedialog.askdirectory(title="选择备份模型目录")
         if path:
@@ -340,6 +366,8 @@ class Obeserver(ModelObserver):
         self.handler.queue.put(("update_backup_status", status))
     def notify_initialized(self, initialized: bool) -> None:
         self.handler.queue.put(("set_initialized", initialized))
+    def notify_loading_progress(self, progress_status: ProcessStatus) -> None:
+        self.handler.queue.put(("show_process_status", progress_status))
 
 if __name__ == "__main__":
     root = tk.Tk()

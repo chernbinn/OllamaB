@@ -99,7 +99,12 @@ class StyleConfigurator:
                     background='#FFF5E6',
                     foreground='#5A4A3A',
                     font=default_font,
-                    padding=(8, 5, 8, 5))
+                    padding=(8, 5, 8, 5),
+                    # relief='flat',
+                    relief='groove',
+                    bordercolor='#FFD6A8',
+                    borderwidth=1,
+                    borderradius=25)
         
         # 滚动条样式
         style.configure('Vertical.TScrollbar',

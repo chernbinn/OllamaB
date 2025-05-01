@@ -5,6 +5,7 @@ import copy
 import logging
 from logging_config import setup_logging
 from threading import Lock
+from enum import Enum
 
 # 初始化日志配置
 logger = setup_logging(log_level=logging.DEBUG, log_tag="models")
@@ -26,6 +27,19 @@ class LLMModel(BaseModel):
     blobs: List[str]
     bk_status: Optional[ModelBackupStatus] = None
 
+class ProcessEvent(Enum):
+    WINDOW_INFO = 1
+    WINDOW_ERR = 2
+    WINDOW_WAR = 3
+    BAR_INFO = 4
+    BAR_ERR = 5
+    BAR_WAR = 6
+    PROGRESS = 7
+
+class ProcessStatus(BaseModel):
+    event: ProcessEvent|None = None
+    message: str|int|None = None
+
 @runtime_checkable
 class ModelObserver(Protocol):
     def notify_add_model(self, model: LLMModel) -> None: ...
@@ -33,6 +47,7 @@ class ModelObserver(Protocol):
     def notify_update_model(self, model: LLMModel) -> None: ...
     def notify_update_backup_status(self, status: ModelBackupStatus) -> None:...
     def notify_initialized(self, initialized: bool) -> None: ...
+    def notify_process_status(self, status: ProcessStatus) -> None:...
 
 class ModelData:
     _instance = None
@@ -50,6 +65,7 @@ class ModelData:
         self._observers: List[ModelObserver] = []
         self._initialized: bool = False
         self._lock = Lock()  # 添加锁对象
+        self._process_event: ProcessEvent = ProcessStatus(event=None, message="就绪")
 
     def add_observer(self, observer: ModelObserver) -> None:
         logger.debug(f"添加观察者: {observer}")  # 调试日志，确保正确添加观察器
@@ -137,3 +153,13 @@ class ModelData:
         """设置初始化状态"""
         self._initialized = value
         self._notify_observers("notify_initialized", value)
+
+    @property
+    def process_event(self) -> ProcessEvent:
+        return self._process_event
+
+    @process_event.setter
+    def process_event(self, value: ProcessEvent) -> None:
+        """设置初始化状态"""
+        self._process_event = value
+        self._notify_observers("notify_process_status", value)
