@@ -502,6 +502,26 @@ def long_running_task(seconds: int, task_name: str):
             logger.debug(f"{task_name} working... {i+1}/{seconds}")
             time.sleep(1)
         return f"{task_name} completed"
+       
+def reliable_task(seconds, name, comm_file):
+    """使用文件系统通信的任务"""
+    # 标记进程启动
+    with open(comm_file, 'w') as f:
+        logger.info(f"Process {name} started")  # 记录进程启动
+        f.write("STARTED")
+    
+    try:
+        for i in range(seconds):
+            # 检查停止信号
+            if os.path.exists(comm_file + '.stop'):
+                logger.info(f"{name} received stop signal")
+                return f"{name} terminated early"
+            time.sleep(0.1)
+        return f"{name} completed"
+    finally:
+        os.remove(comm_file)  # 清理
+
+       
     
 # 使用示例
 if __name__ == "__main__":
@@ -523,10 +543,15 @@ if __name__ == "__main__":
     #executor.execute_async("task21", long_running_task, 6, "Task21", is_long_task=False,callback=task_callback)
     #executor.execute_async("task22", long_running_task, 8, "Task22", is_long_task=False,callback=task_callback)
     #executor.execute_async("task3", LongTask.long_running_task, 5, "Task3", is_long_task=True, callback=task_callback)
-    executor.execute_async("task4", LongTask.long_running_task, 100, "Task4", is_long_task=True)
+    # executor.execute_async("task4", LongTask.long_running_task, 100, "Task4", is_long_task=True)
     #executor.execute_async("task5", LongTask.long_running_task, 100, "Task5", is_long_task=True)
     #executor.execute_async("task6", LongTask.long_running_task, 4, "Task6", is_long_task=True, callback=task_callback)
     #logger.debug(f"is_task_active(task3): {executor.is_task_active("task3")}")
+
+     # 提交任务
+    comm_file = os.path.join(os.getcwd(), "proc_comm_test.txt")
+    success = executor.execute_async("to_terminate", reliable_task, 10, "Terminate Test", comm_file, is_long_task=True)
+    logger.debug(f"submit task success: {success}")
 
     start = time.time()
     while time.time() - start < 5:
