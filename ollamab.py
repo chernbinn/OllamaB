@@ -8,7 +8,7 @@ import json
 import hashlib
 import subprocess
 
-from logging_config import setup_logging
+from utils.logging_config import setup_logging
 
 # 初始化日志配置
 logger = setup_logging(log_level=logging.INFO, log_tag="ollamab")

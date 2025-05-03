@@ -1,8 +1,7 @@
-from ast import main
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import logging
-from logging_config import setup_logging
+from utils.logging_config import setup_logging
 import os
 import threading
 import traceback

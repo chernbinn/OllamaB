@@ -3,7 +3,7 @@ from typing import List, Dict, Optional, Protocol, runtime_checkable
 from pydantic import BaseModel
 import copy
 import logging
-from logging_config import setup_logging
+from utils.logging_config import setup_logging
 from threading import Lock
 from enum import Enum
 

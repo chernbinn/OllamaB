@@ -2,7 +2,7 @@ from queue import LifoQueue
 from tokenize import triple_quoted
 from typing import List, Dict
 import logging
-from logging_config import setup_logging
+from utils.logging_config import setup_logging
 from ollamab import (
     clean_temp_files,
     parse_model_file,     
