@@ -6,7 +6,6 @@ from concurrent.futures import Future, ThreadPoolExecutor, ProcessPoolExecutor
 from functools import partial
 from queue import Queue
 import logging, os
-import dill  # pip install dill
 import logging
 import time
 from multiprocessing.managers import DictProxy
