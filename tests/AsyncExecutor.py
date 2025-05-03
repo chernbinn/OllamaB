@@ -11,6 +11,7 @@ import time
 from multiprocessing.managers import DictProxy
 from multiprocessing import Manager, Lock
 import psutil, signal, sys
+import dill
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -133,10 +134,14 @@ class AsyncExecutor:
         同步环境中启动异步任务
         返回: True表示任务已提交，False表示队列已满被拒绝
         """
+        logger.info(f"execute_async called with task_id: {task_id}")
+        if is_long_task:
+            logger.debug(f"Process pool status: {self._process_pool._max_workers} workers, "
+                        f"{len(self._process_pids)} active")
         if self._shutdown_flag:
-                logger.error("Executor is shutting down")
-                return False
-
+            logger.error("Executor is shutting down")
+            return False
+        
         with self._lock:            
             if task_id in self._running_tasks or task_id in self._queued_tasks:
                 logger.error(f"Task {task_id} already exists")
@@ -162,6 +167,7 @@ class AsyncExecutor:
                 return True
 
             # 立即执行
+            logger.info(f"Executing task {task_id} immediately")
             try:
                 self._submit_task(task_id, func, is_long_task, callback, *args, **kwargs)
             except Exception as e:
@@ -182,6 +188,7 @@ class AsyncExecutor:
             
             return func(*args, **kwargs)
         except Exception as e:
+            logger.error(f"Task {tid} failed: {e.args}")
             raise ChildProcessError(f"Task {tid} failed: {e.args}", self.CHILD_PROCESS_EXCEPTION)
         finally:
             with lock:
@@ -224,6 +231,14 @@ class AsyncExecutor:
     
         executor = self._process_pool if is_long_task else self._thread_pool
         logger.debug(f"Submitting {'long' if is_long_task else 'short'} task {task_id}")
+
+        if is_long_task:
+            # 确保函数可pickle
+            try:
+                dill.dumps((func, args, kwargs))
+            except Exception as e:
+                logger.error(f"Task {task_id} not serializable: {e}")
+                raise
 
         async def async_wrapper():
             if is_long_task: 
@@ -432,8 +447,20 @@ class AsyncExecutor:
     def is_task_active(self, task_id: str) -> bool:
         """检查任务是否在运行或排队中"""
         with self._lock:
-            return (task_id in self._running_tasks and not self._running_tasks[task_id].done()) or \
-                   (task_id in self._queued_tasks)
+            future = self._running_tasks.get(task_id, {}).get('future')
+            pid = self._process_pids.get(task_id, None)
+            queued = task_id in self._queued_tasks
+
+        if queued:
+            return True
+
+        # 检查运行中任务
+        if future and not future.done():
+            return True
+        
+        # 检查进程任务
+        if pid:
+            return self.check_process_alive(pid)
 
     @staticmethod
     def check_process_alive(pid: int) -> bool:
@@ -491,15 +518,15 @@ if __name__ == "__main__":
 
     # 测试正常任务
     logger.debug("\n=== Testing normal execution ===")
-    executor.execute_async("task1", long_running_task, 5, "Task1", is_long_task=False, callback=task_callback)
-    executor.execute_async("task2", long_running_task, 3, "Task2", is_long_task=False,callback=task_callback)
-    executor.execute_async("task21", long_running_task, 6, "Task21", is_long_task=False,callback=task_callback)
-    executor.execute_async("task22", long_running_task, 8, "Task22", is_long_task=False,callback=task_callback)
-    executor.execute_async("task3", LongTask.long_running_task, 5, "Task3", is_long_task=True, callback=task_callback)
-    #executor.execute_async("task4", LongTask.long_running_task, 100, "Task4", is_long_task=True)
+    #executor.execute_async("task1", long_running_task, 5, "Task1", is_long_task=False, callback=task_callback)
+    #executor.execute_async("task2", long_running_task, 3, "Task2", is_long_task=False,callback=task_callback)
+    #executor.execute_async("task21", long_running_task, 6, "Task21", is_long_task=False,callback=task_callback)
+    #executor.execute_async("task22", long_running_task, 8, "Task22", is_long_task=False,callback=task_callback)
+    #executor.execute_async("task3", LongTask.long_running_task, 5, "Task3", is_long_task=True, callback=task_callback)
+    executor.execute_async("task4", LongTask.long_running_task, 100, "Task4", is_long_task=True)
     #executor.execute_async("task5", LongTask.long_running_task, 100, "Task5", is_long_task=True)
-    executor.execute_async("task6", LongTask.long_running_task, 4, "Task6", is_long_task=True, callback=task_callback)
-    logger.debug(f"is_task_active(task3): {executor.is_task_active("task3")}")
+    #executor.execute_async("task6", LongTask.long_running_task, 4, "Task6", is_long_task=True, callback=task_callback)
+    #logger.debug(f"is_task_active(task3): {executor.is_task_active("task3")}")
 
     start = time.time()
     while time.time() - start < 5:
