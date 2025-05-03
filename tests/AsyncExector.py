@@ -15,7 +15,11 @@ import psutil, signal, sys
 
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('test.log', encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)  # 输出到控制台
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -53,16 +57,21 @@ class ProcessTerminator:
             logger.error(f"POSIX terminate failed: {e}")
             return False
 
-class SyncAsyncExecutor:
+class AsyncExecutor:
     SHUTDOWN = 0
     LOOP_NOT_READY = 1
     LOOP_STOPED = 2
-    TASK_NOT_FOUND = 3
-    TASKID_EXITED = 4
-    CALLBACK_NOT_QUEUE = 5
+    LOOP_READY_TIMEOUT = 3
+    TASK_NOT_FOUND = 4
+    TASKID_EXITED = 5
+    TASK_QUEUED_FILLED = 6
+    CALLBACK_NOT_QUEUE = 7
+    CHILD_PROCESS_EXCEPTION = 8
+    GET_RESULT_ERROR = 9
+    
 
-    def __init__(self, *, max_workers: int = 6, 
-                        max_processes: int = 2,
+    def __init__(self, *, max_workers: int = 2, 
+                        max_processes: int = 1,
                         max_queue_size: int = 10, 
                         callback_direct: bool = True):
         self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
@@ -110,7 +119,7 @@ class SyncAsyncExecutor:
         self._event_loop_thread.start()
         self._loop_ready.wait(timeout=10)
         if not self._loop_ready.is_set():
-            raise RuntimeError("Failed to start event loop")
+            raise RuntimeError("Failed to start event loop", self.LOOP_READY_TIMEOUT)
 
     def execute_async(
         self,
@@ -125,18 +134,25 @@ class SyncAsyncExecutor:
         同步环境中启动异步任务
         返回: True表示任务已提交，False表示队列已满被拒绝
         """
-        logger.debug(f"callback: {callback} -- 1")
+        logger.debug(f"1--callback: {callback}")
         if self._shutdown_flag:
-                raise RuntimeError("Executor is shutting down", self.SHUTDOWN)        
+                logger.error("Executor is shutting down")
+                return False
 
         with self._lock:            
             if task_id in self._running_tasks or task_id in self._queued_tasks:
-                raise ValueError(f"Task {task_id} already exists", self.TASKID_EXITED)
+                logger.error(f"Task {task_id} already exists")
+                return False
 
-            if len(self._running_tasks) >= self._thread_pool._max_workers:
+            if all([
+                    (not is_long_task and len(self._running_tasks) >= self._thread_pool._max_workers),
+                    (is_long_task and len(self._process_pids) >= self._process_pool._max_workers)]
+                ):
                 if len(self._queued_tasks) >= self._max_queue_size:
+                    logger.error(f"Task queue is full, _max_queue_size: {self._max_queue_size}")
                     return False
                 
+                logger.info(f"Task {task_id} queued, current queue size: {len(self._queued_tasks)}")
                 # 放入队列等待执行
                 self._queued_tasks[task_id] = {
                     'func': func,
@@ -148,8 +164,13 @@ class SyncAsyncExecutor:
                 return True
 
             # 立即执行
-            logger.debug(f"callback: {callback} -- 11")
-            self._submit_task(task_id, func, is_long_task, callback, *args, **kwargs)
+            logger.debug(f"11--callback: {callback}")
+            try:
+                self._submit_task(task_id, func, is_long_task, callback, *args, **kwargs)
+            except Exception as e:
+                logger.error(f"Failed to submit task {task_id}: {e.args}")
+                logger.error(f"traceback: {e.__traceback__}")
+                return False
             return True
 
     @staticmethod
@@ -157,17 +178,37 @@ class SyncAsyncExecutor:
                       pids: DictProxy, lock: Any) -> Any:
         """静态方法确保可序列化"""
         pid = os.getpid()
-        logger.debug(f"Running long task {tid} in process {pid}")
+        logger.info(f"Running long task {tid} in process {pid}")
         try:
             with lock:
                 pids[tid] = pid
             
             return func(*args, **kwargs)
         except Exception as e:
-            raise ChildProcessError(f"Task {tid} failed: {e}")
+            raise ChildProcessError(f"Task {tid} failed: {e.args}", self.CHILD_PROCESS_EXCEPTION)
         finally:
             with lock:
                 pids.pop(tid, None)
+
+    def _done_callback(self, task_id: str, callback: Callable, future: Future):
+        current_thread = threading.current_thread()
+        logger.debug(f"Callback executing in thread: {current_thread.name}")
+        if not self._shutdown_flag and task_id in self._running_tasks:
+            if callback and isinstance(callback, Callable):
+                try:
+                    result = future.result()                    
+                except Exception as e:
+                    result = Exception(e, self.GET_RESULT_ERROR)
+                logger.debug(f"3--callback: {callback}")
+                if self._callback_direct:
+                    callback(result)
+                else:
+                    self._callback_queue.put((callback, result))
+
+            with self._lock:
+                self._process_pids.pop(task_id, None)
+                self._running_tasks.pop(task_id, None)
+                self._process_next_queued_task()
 
     def _submit_task(
         self,
@@ -182,68 +223,44 @@ class SyncAsyncExecutor:
             raise RuntimeError("Executor is shutting down", self.SHUTDOWN)
         if not self._event_loop or not self._loop_ready.is_set():
             raise RuntimeError("Event loop not ready", self.LOOP_NOT_READY)
-        
     
         executor = self._process_pool if is_long_task else self._thread_pool
         logger.debug(f"Submitting {'long' if is_long_task else 'short'} task {task_id}")
 
-        logger.debug(f"callback: {callback} -- 112")
+        logger.debug(f"112--callback: {callback}")
 
         async def async_wrapper():
-            try:
-                if is_long_task:
-                    try:
-                        dill.dumps((func, args, kwargs))
-                    except Exception as e:
-                        raise ValueError(f"Task {task_id} not serializable: {e}")
-                    result = await self._event_loop.run_in_executor(
-                        self._process_pool,
-                        self._run_long_task,  # 使用静态方法
-                        task_id, func, args, kwargs,
-                        self._process_pids, self._process_lock
-                    )
-                else:
-                    result = await self._event_loop.run_in_executor(
-                        executor,
-                        partial(func, *args, **kwargs)
-                    )
-                return result
-            except Exception as e:
-                logger.error(f"Task {task_id} failed: {e}")
-                return e  # 返回异常对象
+            if is_long_task: 
+                result = await self._event_loop.run_in_executor(
+                    self._process_pool,
+                    self._run_long_task,  # 使用静态方法
+                    task_id, func, args, kwargs,
+                    self._process_pids, self._process_lock
+                )
+            else:
+                result = await self._event_loop.run_in_executor(
+                    executor,
+                    partial(func, *args, **kwargs)
+                )
+            return result
 
-        def done_callback(future: Future):
-            if not self._shutdown_flag:
-                if callback and isinstance(callback, Callable):
-                    try:
-                        result = future.result()                    
-                    except Exception as e:
-                        result = e
-                    logger.debug(f"callback: {callback} -- 3")
-                    if self._callback_direct:
-                        callback(result)
-                    else:
-                        self._callback_queue.put((callback, result))
-
-                with self._lock:
-                    self._process_pids.pop(task_id, None)
-                    self._running_tasks.pop(task_id, None)
-                    self._process_next_queued_task()
-
-        logger.debug(f"callback: {callback} -- 2")
+        logger.debug(f"2--callback: {callback}")
         if False: #is_long_task:
-            # 该逻辑也可以使用
+            # 该逻辑也可以使用。回调函数在调用线程中执行
             future = self._process_pool.submit(
                         self._run_long_task,
                         task_id, func, args, kwargs,
                         self._process_pids, self._process_lock
                     )
         else:
+            # 使用协程获取future好处：任务执行完之后，回调函数是在协程的队列线程中执行
             future = asyncio.run_coroutine_threadsafe(
                 async_wrapper(),
                 self._event_loop
             )
-        future.add_done_callback(done_callback)
+        # partial(self._done_callback, task_id, callback) 和使用lambda的效果是一样的
+        # 但是使用partial可以避免lambda的闭包问题，同时也可以传递参数
+        future.add_done_callback(partial(self._done_callback, task_id, callback))
         self._running_tasks[task_id] = future
 
     def _process_next_queued_task(self) -> None:
@@ -289,6 +306,7 @@ class SyncAsyncExecutor:
                     ProcessTerminator.terminate(self._process_pids[task_id])
                     logger.debug(f"Sent SIGTERM to process {self._process_pids[task_id]}")
                 except ProcessLookupError:
+                    logger.warning(f"Process {self._process_pids[task_id]} maybe already exited")
                     pass
                 finally:
                     self._process_pids.pop(task_id, None)
@@ -301,12 +319,25 @@ class SyncAsyncExecutor:
                 self._process_next_queued_task()
                 return True
             
+            logger.error(f"Task {task_id} not found")
             return False
 
     def has_tasks(self) -> int:
         """检查是否有任务在运行或排队中"""
         with self._lock:
             return (self._running_tasks.__len__() + self._queued_tasks.__len__())
+
+    def get_task_status(self):
+        with self._lock:
+            return {
+                'running': list(self._running_tasks.keys()),
+                'queued': list(self._queued_tasks.keys()),
+                'processes': dict(self._process_pids)
+            }
+
+    def set_concurrency(self, max_workers: int, max_processes: int):
+        self._thread_pool._max_workers = max_workers
+        self._process_pool._max_workers = max_processes
 
     def shutdown(self) -> None:
         """关闭执行器"""
@@ -342,7 +373,9 @@ class SyncAsyncExecutor:
             self._event_loop.call_soon_threadsafe(self._event_loop.stop)
         logger.info("Shutting down thread pool.")
         self._thread_pool.shutdown(wait=False)
+        logger.info("Shutting down process pool.")
         self._process_pool.shutdown(wait=False)
+        logger.info("Shutting down share args.")
         self._manager.shutdown()  # 必须显式关闭Manager
         logger.debug("Shutting down executor over")
 
@@ -352,13 +385,12 @@ class SyncAsyncExecutor:
             return (task_id in self._running_tasks and not self._running_tasks[task_id].done()) or \
                    (task_id in self._queued_tasks)
 
-    import psutil  # pip install psutil
-
-def check_process_alive(pid: int) -> bool:
-    try:
-        return psutil.Process(pid).is_running()
-    except:
-        return False
+    @staticmethod
+    def check_process_alive(pid: int) -> bool:
+        try:
+            return psutil.Process(pid).is_running()
+        except:
+            return False
 
 class LongTask:
     def __init__(self):
@@ -402,15 +434,19 @@ if __name__ == "__main__":
 
     # 测试初始化
     logger.debug("=== Testing initialization ===")
-    executor = SyncAsyncExecutor(max_workers=2, max_queue_size=3)
+    executor = AsyncExecutor(max_workers=2, max_queue_size=3)
     logger.debug("Executor initialized successfully")
 
     # 测试正常任务
     logger.debug("\n=== Testing normal execution ===")
-    #executor.execute_async("task1", long_running_task, 5, "Task1", is_long_task=False, callback=task_callback)
-    #executor.execute_async("task2", long_running_task, 3, "Task2", is_long_task=False,callback=task_callback)
+    executor.execute_async("task1", long_running_task, 5, "Task1", is_long_task=False, callback=task_callback)
+    executor.execute_async("task2", long_running_task, 3, "Task2", is_long_task=False,callback=task_callback)
+    executor.execute_async("task21", long_running_task, 6, "Task21", is_long_task=False,callback=task_callback)
+    executor.execute_async("task22", long_running_task, 8, "Task22", is_long_task=False,callback=task_callback)
     executor.execute_async("task3", LongTask.long_running_task, 5, "Task3", is_long_task=True, callback=task_callback)
-    executor.execute_async("task4", LongTask.long_running_task, 30, "Task4", is_long_task=True)
+    #executor.execute_async("task4", LongTask.long_running_task, 100, "Task4", is_long_task=True)
+    #executor.execute_async("task5", LongTask.long_running_task, 100, "Task5", is_long_task=True)
+    executor.execute_async("task6", LongTask.long_running_task, 4, "Task6", is_long_task=True, callback=task_callback)
     logger.debug(f"is_task_active(task3): {executor.is_task_active("task3")}")
 
     start = time.time()
@@ -420,7 +456,7 @@ if __name__ == "__main__":
         if executor.is_task_active("task3"):
             pid = executor._process_pids.get("task3")
             if pid:
-                status = "alive" if check_process_alive(pid) else "dead"
+                status = "alive" if executor.check_process_alive(pid) else "dead"
                 logger.debug(f"Process {pid} is {status}")
         
         # executor.process_callbacks()
@@ -435,9 +471,11 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Error in main loop: {e}")
 
-    logger.info(f"\nPending tasks:{executor.has_tasks()}")    
+    logger.info(f"\nPending tasks:{executor.has_tasks()}")
+
+    time.sleep(15)
 
     # 测试关闭
-    print("\n=== Testing shutdown ===")
+    logger.debug("\n=== Testing shutdown ===")
     executor.shutdown()
-    print("Executor shutdown complete")
+    logger.debug("Executor shutdown complete")
