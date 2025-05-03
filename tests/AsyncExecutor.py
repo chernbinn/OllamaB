@@ -142,7 +142,7 @@ class AsyncExecutor:
                 logger.error(f"Task {task_id} already exists")
                 return False
 
-            if all([
+            if any([
                     (not is_long_task and len(self._running_tasks) >= self._thread_pool._max_workers),
                     (is_long_task and len(self._process_pids) >= self._process_pool._max_workers)]
                 ):
@@ -266,11 +266,13 @@ class AsyncExecutor:
         # 获取第一个排队任务
         task_id, task_data = next(iter(self._queued_tasks.items()))
         self._queued_tasks.pop(task_id)
+        callback = task_data.get('callback')
         
         self._submit_task(
             task_id,
             task_data['func'],
-            task_data['callback'],
+            task_data['is_long_task'],
+            callback,  # 显式传递callback
             *task_data['args'],
             **task_data['kwargs']
         )
