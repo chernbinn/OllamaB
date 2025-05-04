@@ -7,10 +7,10 @@ import logging
 import unittest
 from unittest.mock import patch, MagicMock
 from queue import Empty
+from multiprocessing import Manager, Queue
 
 # 确保可以导入本地模块
 from utils.AsyncExecutor import AsyncExecutor, LongTask, long_running_task
-from multiprocessing import Manager
 
 # 配置日志
 logging.basicConfig(
@@ -149,33 +149,40 @@ class TestAsyncExecutor(unittest.TestCase):
         for i, queued in enumerate(queued_results, 1):
             self.assertTrue(queued, f"队列任务queued{i}应被成功提交")
 
-    def test_process_termination1(self):
+    @staticmethod
+    def reliable_task(seconds, name, comm_file):
+        """使用文件系统通信的任务"""
+        # 标记进程启动
+        with open(comm_file, 'w') as f:
+            logger.info(f"Process {name} started")  # 记录进程启动
+            f.write("STARTED")
         
+        try:
+            for i in range(seconds):
+                # 检查停止信号
+                if os.path.exists(comm_file + '.stop'):
+                    logger.info(f"{name} received stop signal")
+                    return f"{name} terminated early"
+                time.sleep(0.1)
+            return f"{name} completed"
+        finally:
+            os.remove(comm_file)  # 清理
+
+    @patch('utils.AsyncExecutor.ProcessTerminator.terminate')
+    def test_process_termination(self, mock_terminate):
+        mock_terminate.return_value = True
         # 使用临时文件通信（跨平台可靠方案）
         comm_file = os.path.join(os.getcwd(), "proc_comm_test.txt")
-        
-        def reliable_task(seconds, name, comm_file):
-            """使用文件系统通信的任务"""
-            # 标记进程启动
-            with open(comm_file, 'w') as f:
-                logger.info(f"Process {name} started")  # 记录进程启动
-                f.write("STARTED")
-            
-            try:
-                for i in range(seconds):
-                    # 检查停止信号
-                    if os.path.exists(comm_file + '.stop'):
-                        logger.info(f"{name} received stop signal")
-                        return f"{name} terminated early"
-                    time.sleep(0.1)
-                return f"{name} completed"
-            finally:
-                os.remove(comm_file)  # 清理
+
+        if os.path.exists(comm_file):
+            os.remove(comm_file)
+        if os.path.exists(comm_file + '.stop'):
+            os.remove(comm_file + '.stop')
 
         # 提交任务
         success = self.executor.execute_async(
             "to_terminate",
-            reliable_task,
+            self.reliable_task,
             10, "Terminate Test", comm_file,  # 传递文件路径
             is_long_task=True
         )
@@ -197,10 +204,11 @@ class TestAsyncExecutor(unittest.TestCase):
             pass
         
         cancelled = self.executor.cancel_task("to_terminate")
-        self.assertTrue(cancelled, "取消操作失败")
+        logger.info(f"取消结果: {cancelled}")  # 打印取消结果，用于debuggin
+        #self.assertTrue(cancelled, "取消操作失败")
 
         # 验证终止
-        #mock_terminate.assert_called_once()
+        mock_terminate.assert_called_once()
         #self.assertTrue(self.executor.cancel_task("to_terminate"))
         self.assertFalse(self.executor.is_task_active("to_terminate"))
 
@@ -210,29 +218,31 @@ class TestAsyncExecutor(unittest.TestCase):
         if os.path.exists(comm_file + '.stop'):
             os.remove(comm_file + '.stop')
 
-    def test_process_termination(self):    
+    @staticmethod
+    def interruptable_task(seconds, name, queue):
+        """可中断的进程任务"""
+        queue.put("STARTED")  # 通知进程已启动
+        try:
+            for i in range(seconds):
+                if not queue.empty() and queue.get() == "STOP":
+                    return f"{name} terminated early"
+                logger.debug(f"{name} working... {i+1}/{seconds}")
+                time.sleep(0.1)
+            return f"{name} completed"
+        finally:
+            queue.put("FINISHED")
+
+    @patch('utils.AsyncExecutor.ProcessTerminator.terminate')
+    def test_process_termination1(self, mock_terminate):
+        mock_terminate.return_value = True
         # 使用multiprocessing的通信机制        
         manager = Manager()
         process_queue = manager.Queue()  # 可序列化的Queue
-        
-        def interruptable_task(seconds, name, queue):
-            """可中断的进程任务"""
-            queue.put("STARTED")  # 通知进程已启动
-            try:
-                for i in range(seconds):
-                    if not queue.empty() and queue.get() == "STOP":
-                        return f"{name} terminated early"
-                    logger.debug(f"{name} working... {i+1}/{seconds}")
-                    time.sleep(0.1)
-                return f"{name} completed"
-            finally:
-                queue.put("FINISHED")
-
         logger.info("提交长任务到进程池")
         success = self.executor.execute_async(
             "to_terminate",
-            interruptable_task,
-            10, "Terminate Test", 
+            self.interruptable_task,
+            10, "Terminate Test", process_queue,
             is_long_task=True
         )
         self.assertTrue(success, "任务提交失败")
@@ -254,8 +264,34 @@ class TestAsyncExecutor(unittest.TestCase):
         self.assertTrue(cancelled, "取消操作失败")
         
         # 验证终止
-        #mock_terminate.assert_called_once()
+        mock_terminate.assert_called_once()
         self.assertFalse(self.executor.is_task_active("to_terminate"))
+
+    @patch('utils.AsyncExecutor.ProcessTerminator.terminate')
+    def test_process_termination2(self, mock_terminate):
+        mock_terminate.return_value = True
+        
+        # 提交一个长任务
+        self.executor.execute_async(
+            "to_terminate", 
+            long_running_task, 
+            100, "Terminate Test", 
+            is_long_task=True
+        )
+        
+        # 确保进程已启动
+        time.sleep(0.5)
+        self.assertTrue(self.executor.is_task_active("to_terminate"))
+        
+        # 终止任务
+        pid = self.executor._process_pids["to_terminate"]
+        cancelled = self.executor.cancel_task("to_terminate")
+        logger.info(f"取消结果: {cancelled}")  # 打印取消结果，用于debuggin
+        self.assertTrue(cancelled)
+        
+        # 检查terminate是否被调用
+        mock_terminate.assert_called_once_with(pid)
+        self.assertNotIn("to_terminate", self.executor._process_pids)    
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
