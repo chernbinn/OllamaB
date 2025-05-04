@@ -172,7 +172,6 @@ class AsyncExecutor:
                 self._submit_task(task_id, func, is_long_task, callback, *args, **kwargs)
             except Exception as e:
                 logger.error(f"Failed to submit task {task_id}: {e.args}")
-                logger.error(f"traceback: {e.__traceback__}")
                 return False
             return True
 
@@ -185,11 +184,11 @@ class AsyncExecutor:
         try:
             with lock:
                 pids[tid] = pid
-            
+                
             return func(*args, **kwargs)
         except Exception as e:
-            logger.error(f"Task {tid} failed: {e.args}")
-            raise ChildProcessError(f"Task {tid} failed: {e.args}", self.CHILD_PROCESS_EXCEPTION)
+            logger.error(f"Task: {tid} failed: {e.args}")
+            return e
         finally:
             with lock:
                 pids.pop(tid, None)
@@ -197,23 +196,30 @@ class AsyncExecutor:
     def _done_callback(self, task_id: str, callback: Callable, future: Future):
         current_thread = threading.current_thread()
         logger.debug(f"Callback executing in thread: {current_thread.name}")
+
+        try:
+            result = future.result()                    
+        except Exception as e:
+            result = Exception(e, self.GET_RESULT_ERROR)
+
+        logger.info(f"Task: {task_id} completed with result: {result}")
+        if isinstance(result, Exception):
+            logger.error(f"Task: {task_id} occur exception, args: {result.args}")
+        
         if not self._shutdown_flag:
             with self._lock:
                 exist_id = task_id in self._running_tasks
-            if callback and isinstance(callback, Callable) and exist_id:
-                try:
-                    result = future.result()                    
-                except Exception as e:
-                    result = Exception(e, self.GET_RESULT_ERROR)
-                if self._callback_direct:
-                    callback(result)
-                else:
+                is_callback = self._callback_direct
+                if not self._callback_direct:
                     self._callback_queue.put((callback, result))
-
-            with self._lock:
                 self._process_pids.pop(task_id, None)
                 self._running_tasks.pop(task_id, None)
                 self._process_next_queued_task()
+
+            if all([callback and isinstance(callback, Callable),
+                    exist_id and is_callback
+                    ]):
+                callback(result)
 
     def _submit_task(
         self,
@@ -232,28 +238,26 @@ class AsyncExecutor:
         executor = self._process_pool if is_long_task else self._thread_pool
         logger.debug(f"Submitting {'long' if is_long_task else 'short'} task {task_id}")
 
-        if is_long_task:
-            # 确保函数可pickle
-            try:
-                dill.dumps((func, args, kwargs))
-            except Exception as e:
-                logger.error(f"Task {task_id} not serializable: {e}")
-                raise
-
         async def async_wrapper():
-            if is_long_task: 
-                result = await self._event_loop.run_in_executor(
-                    self._process_pool,
-                    self._run_long_task,  # 使用静态方法
-                    task_id, func, args, kwargs,
-                    self._process_pids, self._process_lock
-                )
-            else:
-                result = await self._event_loop.run_in_executor(
-                    executor,
-                    partial(func, *args, **kwargs)
-                )
-            return result
+            try:
+                if is_long_task: 
+                    logger.debug(f"To run long task {task_id} ")
+                    result = await self._event_loop.run_in_executor(
+                        self._process_pool,
+                        self._run_long_task,  # 使用静态方法
+                        task_id, func, args, kwargs,
+                        self._process_pids, self._process_lock
+                    )
+                    
+                else:
+                    result = await self._event_loop.run_in_executor(
+                        executor,
+                        partial(func, *args, **kwargs)
+                    )
+                return result
+            except Exception as e:
+                    logger.error(f"Task: {task_id} failed: {e}")
+                    return e
 
         if False: #is_long_task:
             # 该逻辑也可以使用。回调函数在调用线程中执行
