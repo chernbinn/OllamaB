@@ -3,29 +3,11 @@ import logging.handlers
 import inspect
 import sys
 import os
+import threading
 
-golbal_log_level = logging.DEBUG
-# 模块级日志级别配置
-_module_log_levels = {}
-
-def set_module_log_level(level, module_name=None):
-    """
-    设置模块级日志级别
-    :param level: 日志级别
-    :param module_name: 模块名称(可选)，如未提供则自动获取调用模块名
-    """
-    if module_name is None:
-        frame = inspect.currentframe().f_back
-        module_name = os.path.basename(frame.f_globals.get('__file__', 'unknown')).split('.')[0]
-    _module_log_levels[module_name] = level
-
-def get_module_log_level(module_name):
-    """
-    获取模块级日志级别
-    :param module_name: 模块名称
-    :return: 日志级别，如未设置返回None
-    """
-    return _module_log_levels.get(module_name)
+_release = False
+_release_log_level = logging.INFO
+_golbal_log_level = logging.DEBUG
 
 class ModuleFilter(logging.Filter):
     def __init__(self, module_name):
@@ -49,6 +31,9 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
     :param max_bytes: 单个日志文件最大字节数
     :param backup_count: 保留的备份日志文件数量
     """
+    if _release:
+        log_level = _release_log_level
+        golbal_log_level = _release_log_level
     # 获取调用模块名称
     frame = inspect.currentframe().f_back
     module_name = os.path.basename(frame.f_globals.get('__file__', 'unknown')).split('.')[0]
@@ -58,9 +43,7 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
     logger = logging.getLogger(module_name)
     adapter = logging.LoggerAdapter(logger, {'log_tag': log_tag})
     
-    # module_level = get_module_log_level(module_name)
-    logger.setLevel(log_level)
-    
+    logger.setLevel(_golbal_log_level)
     # 清除现有handler
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
@@ -71,7 +54,7 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
         '%(asctime)s-%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s')    
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(console_formatter)
-    #console_handler.setLevel(log_level)
+    console_handler.setLevel(log_level)
     console_handler.encoding = 'utf-8'
     logger.addHandler(console_handler)
     
@@ -81,11 +64,11 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
         maxBytes=max_bytes,
         backupCount=backup_count,
         encoding='utf-8',
-        errors='replace'
+        # errors='replace'
     )
-    #global_handler.setLevel(golbal_log_level)
+    global_handler.setLevel(_golbal_log_level)
     global_handler.setFormatter(logging.Formatter(
-        '%(asctime)s-%(pathname)s:%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s'
+        '%(asctime)s-%(filename)s:%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s'
     ))
     logger.addHandler(global_handler)
 
@@ -95,14 +78,39 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
             maxBytes=max_bytes,
             backupCount=backup_count,
             encoding='utf-8',
-            errors='replace'
+            #errors='replace'
         )
-        #module_handler.setLevel(log_level)
+        module_handler.setLevel(log_level)
         module_handler.addFilter(ModuleFilter(module_name))
         # 确保所有handler使用相同格式
         module_handler.setFormatter(logging.Formatter(
             '%(asctime)s-%(funcName)s:%(lineno)d-%(levelname)s-[%(log_tag)s]%(message)s'
         ))
         logger.addHandler(module_handler)
+    
+    def thread_excepthook(args):
+        adapter.error(
+            f"线程 {args.thread.name} 发生未捕获异常:",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback)
+        )
+    
+    def handle_uncaught_exception(exc_type, exc_value, exc_traceback):
+        """
+        全局捕获未处理的异常，并记录到日志
+        """
+        if issubclass(exc_type, KeyboardInterrupt):
+            # 如果是 Ctrl+C 触发的 KeyboardInterrupt，不记录
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+
+        adapter.error(
+            "未捕获的异常:",
+            exc_info=(exc_type, exc_value, exc_traceback)
+        )
+
+    # 设置主线程的异常钩子
+    sys.excepthook = handle_uncaught_exception
+    # 设置子线程的异常钩子（Python 3.8+）
+    threading.excepthook = thread_excepthook
 
     return adapter
