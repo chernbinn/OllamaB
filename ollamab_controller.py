@@ -54,7 +54,7 @@ class BackupController:
         return AsyncLoad.check_backup_status(self.model_path, self.backup_path)
 
     @staticmethod
-    def _backup_one_model(model_path: str, model_dict: dict, zip_name: str) -> str:
+    def _backup_one_model(model_path: str, backup_dir: str, model_dict: dict, zip_name: str) -> str:
         """备份单个模型"""
         zip_path = zip_model(model_path, model_dict, zip_name)
         if zip_path:
@@ -72,7 +72,7 @@ class BackupController:
             zip_file=None
         ))
 
-    def check_model_backup_status(self, model_name: str, zip_file: str = None) -> bool:
+    def _check_model_backup_status(self, model_name: str, zip_file: str = None) -> bool:
         """检查模型备份状态"""
         dest_path = zip_file
         if zip_file == None:
@@ -86,7 +86,8 @@ class BackupController:
             model_name=model_name,
             backup_path=self.backup_path,
             backup_status=backupde,
-            zip_file=zip_file
+            zip_file=zip_file,
+            zip_md5=None
         ))
         if backupde and zip_file:
             return True
@@ -113,13 +114,32 @@ class BackupController:
         else:
             logger.error(f"备份失败: {model_name}")
             clean_temp_files(self.model_path, self.model_path)
-            res = self.asyncExcutor.execute_async(
-                self.check_model_backup_status, 
-                model_name, 
-                os.path.join(self.backup_path, zip_name),
-                is_long_task=False)
-            if not res:
-                logger.error(f"提交异步检查{model_name}备份失败后的文件状态的任务失败！")
+            self.model_data.update_backup_status(ModelBackupStatus(
+                model_name=model_name,
+                backup_path=self.backup_path,
+                backup_status=False,
+                zip_file=zip_name,
+                zip_md5=None
+            ))
+
+    def _get_zip_name(self, model_name: str) -> str:
+        """获取zip文件名"""
+        model_dict = self._get_model_detail_file(model_name)
+        seps = model_dict.model_file_path.split(os.sep)
+        zip_name = "backup_" + ((seps[-2]+"_") if seps[-2] else '') + seps[-1] + ".zip"
+        return zip_name  
+
+    def check_model_backup_status(self, model_name: str) -> bool:
+        """检查备份状态"""        
+        zip_name = self._get_zip_name(model_name)
+        res = self.asyncExcutor.execute_async(
+            model_name, # task_id
+            self._check_model_backup_status, # task_func
+            model_name,  # func_args
+            os.path.join(self.backup_path, zip_name), # func_args
+            is_long_task=False) # is_long_task
+        if not res:
+            logger.error(f"提交异步检查{model_name}备份失败后的文件状态的任务失败！")
         
     def run_backup(self, models):
         logger.info(f"开始备份模型: {models}")
@@ -134,7 +154,7 @@ class BackupController:
                 logger.debug(f"zip_name: {zip_name}")
                 res = self.asyncExcutor.execute_async(model, 
                         self._backup_one_model,
-                        self.model_path, model_dict.model_dump(), zip_name,
+                        self.model_path, self.backup_path, model_dict.model_dump(), zip_name,
                         is_long_task=True, 
                         callback=partial(self._backup_terminated, model, zip_name)
                 )
@@ -191,6 +211,23 @@ class BackupController:
                             'digests': model_dict.get('digests', [])
                         })
         return models
+    
+    def get_backupping_count(self):
+        return self.asyncExcutor.get_running_process_count()
+    
+    def get_queued_count(self):
+        return self.asyncExcutor.get_queued_task_count()
+    
+    def destroy(self, force: bool=False)->bool:
+        if force:
+            
+            self.asyncExcutor.shutdown()
+        elif self.asyncExcutor.is_all_tasks_done():
+            self.asyncExcutor.shutdown()
+        else:
+            return False
+        return True
+
 
 class AsyncLoad:
     model_cache = {}

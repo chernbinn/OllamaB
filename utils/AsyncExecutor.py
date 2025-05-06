@@ -126,7 +126,16 @@ class AsyncExecutor:
     CALLBACK_NOT_QUEUE = 7
     CHILD_PROCESS_EXCEPTION = 8
     GET_RESULT_ERROR = 9
-    
+
+    _instance = None
+    _lock = Lock()
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance    
 
     def __init__(self, *, max_workers: int = 2, 
                         max_processes: int = 1,
@@ -592,6 +601,20 @@ class AsyncExecutor:
         """检查任务是否在队列中"""
         with self._lock:
             return task_id in self._queued_tasks
+    
+    def is_all_tasks_done(self) -> bool:
+        with self._lock:
+            return (self._running_tasks.__len__() == 0 and self._queued_tasks.__len__() == 0)
+
+    def get_running_process_count(self) -> int:
+        """获取当前运行中的进程数量"""
+        with self._process_lock:
+            return len(self._process_pids)
+    
+    def get_queued_task_count(self)-> int:
+        """获取当前排队中的任务数量"""
+        with self._lock:
+            return len(self._queued_tasks)
 
     def set_concurrency(self, max_workers: int, max_processes: int):
         self._thread_pool._max_workers = max_workers

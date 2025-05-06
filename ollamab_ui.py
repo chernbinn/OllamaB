@@ -1,7 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import logging
-from utils.logging_config import setup_logging
 import os
 import threading
 import traceback
@@ -18,6 +17,8 @@ from theme import Theme, StyleConfigurator
 import queue
 from threading import Thread
 from pathlib import Path
+from utils.logging_config import setup_logging
+from utils.AsyncExecutor import AsyncExecutor
 
 # 初始化日志配置
 logger = setup_logging(log_level=logging.INFO)
@@ -37,6 +38,7 @@ class BackupApp:
         self.BACKUPED_SYMBOL = '[已备份]'
         self.CHECKING_SYMBOL = '[校验中]'
         self.BACKUPED_ERROR_SYMBOL = '[备份异常]'
+        self.BACKUPED_FAILED_SYMBOL = '[备份失败]'
         self.BACKUPING_SYMBOL = '[备份中]'
 
         self.default_backup_path = r"F:\llm_models\ollama_modes_backup"
@@ -48,7 +50,21 @@ class BackupApp:
         self.backup_path = os.getenv("OLLAMA_BACKUP_PATH")
         if not self.backup_path:
             self.backup_path = self.default_backup_path
+
+        # 初始化异步执行器
+        self.async_executor = AsyncExecutor()
+
+        # 初始化UI组件
+        self.create_widgets()
+        #self.configure_style_warm()
+        StyleConfigurator.configure_style(self, Theme.WARM)
         
+        # 绑定窗口关闭事件
+        master.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.async_executor.execute_async("ui_init", self.init, is_long_task=False)
+    
+    def init(self):
+        """ 异步初始化，不可以初始化UI组件。不可以直接刷新UI """
         self.controller = BackupController(self.model_path, self.backup_path)
         # 初始化数据模型和观察者
         self.model_data = ModelData()
@@ -60,13 +76,37 @@ class BackupApp:
         # 初始化缓存锁和模型缓存
         self.cache_lock = threading.Lock()
         self.model_cache = {}
-
-        # 初始化UI组件
-        self.create_widgets()
-        #self.configure_style_warm()
-        StyleConfigurator.configure_style(self, Theme.WARM)
+        
         # 初始化数据内容
-        self.controller.start_async_loading()    
+        self.controller.start_async_loading()
+
+    def _release(self):
+        self.uiHandler.running = False
+        self.controller.destroy(True)
+        self.master.destroy()
+
+    def on_close(self):
+        """处理窗口关闭事件，释放资源"""  
+        process_count = self.controller.get_backupping_count()
+        queue_count = self.controller.get_queued_count()
+        if process_count == 0 and queue_count == 0:
+            logger.info("没有正在进行的备份或排队备份，直接关闭应用程序。")
+            self._release()
+        else:
+            logger.info(f"请求确认退出应用程序？")
+            b_destroy = messagebox.askyesno(
+                "确认退出", 
+                "是否确认退出应用程序？"
+                f"""注意：\n
+                    有{process_count}个模型正在备份，
+                    有{queue_count}个模型正在排队备份。\n
+                    如果您选择退出，所有正在进行的操作将被取消。"""
+            )
+            if b_destroy:
+                logger.info("用户确认退出应用程序。")
+                self._release()
+            else:
+                logger.info("用户取消退出应用程序。")
 
     def create_widgets(self)->None:
         # 主框架
@@ -194,7 +234,10 @@ class BackupApp:
             else:
                 return self.BACKUPING_SYMBOL
         elif zip_file:
-                return self.BACKUPED_ERROR_SYMBOL
+            if status.zip_md5:
+                return self.BACKUPED_ERROR_SYMBOL                
+            elif status.zip_md5:
+                return self.BACKUPED_FAILED_SYMBOL
         else:
             return self.UNCHECKED_SYMBOL
 
@@ -328,13 +371,13 @@ class BackupApp:
         #self.model_data.add_observer(lambda: self.update_progress(self.model_data.loading_progress))
         # 启动异步加载
         self.controller.chdir_path(self.model_path, self.backup_path)
-        self.controller.start_async_loading()
-
+        self.controller.start_async_loading()    
+        
     def thread_safe_messagebox(self, title, message, message_type="info"):
         """线程安全的消息框显示"""
         try:
             if self.master and self.master.winfo_exists():
-                if message_type == 'info':
+                if message_type == 'info':                    
                     self.master.after(0, lambda: messagebox.showinfo(title, message))
                 elif message_type == 'error':
                     self.master.after(0, lambda: messagebox.showerror(title, message))
