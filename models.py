@@ -122,7 +122,7 @@ class ModelData:
         """更新备份状态并通知观察者"""
         logger.debug(f"更新备份状态: {status}")  # 调试日志，确保正确更新备份状态
         model_name = status.model_name
-        if status.backup_status:
+        if status.backup_status and status.zip_file:
             zip_file = status.zip_file
             zip_md5 = zip_file.split('_')[-1].split('.')[0]
             status.zip_md5 = zip_md5

@@ -19,7 +19,6 @@ import queue
 from threading import Thread
 from pathlib import Path
 
-
 # 初始化日志配置
 logger = setup_logging(log_level=logging.INFO)
 
@@ -37,7 +36,8 @@ class BackupApp:
         self.UNCHECKED_SYMBOL = '[ ]'
         self.BACKUPED_SYMBOL = '[已备份]'
         self.CHECKING_SYMBOL = '[校验中]'
-        self.BACKUPED_ERROR_SYMBOL = '[异常]'
+        self.BACKUPED_ERROR_SYMBOL = '[备份异常]'
+        self.BACKUPING_SYMBOL = '[备份中]'
 
         self.default_backup_path = r"F:\llm_models\ollama_modes_backup"
         self.default_model_path = r"F:\llm_models\ollama_modes"
@@ -162,9 +162,24 @@ class BackupApp:
             current = self.tree.item(item, 'values')
             logger.debug(f"当前状态: {current}")  # 调试日志，确保正确获取当前状态
             new_state = self.CHECKED_SYMBOL if current[0] == self.UNCHECKED_SYMBOL else self.UNCHECKED_SYMBOL
-            self.tree.item(item, values=(new_state,))
-            
+
+            if any([
+                current[0] == self.BACKUPED_ERROR_SYMBOL,
+                current[0] == self.BACKUPED_SYMBOL,
+                current[0] == self.CHECKING_SYMBOL,
+            ]):
+                return
+
             model_name = self.tree.item(item, 'text')
+            if any([
+                current[0] == self.BACKUPING_SYMBOL,
+                current[0] == self.CHECKED_SYMBOL,
+            ]):
+                new_state = self.UNCHECKED_SYMBOL
+                if not self.cancle_backup(model_name, current[0]):
+                    return
+
+            self.tree.item(item, values=(new_state,))            
             logger.debug(f"复选框状态更新：{model_name} -> {new_state}")
     
     def _get_backup_value(self, status: ModelBackupStatus)->str:
@@ -176,6 +191,8 @@ class BackupApp:
         if backuped:
             if zip_file:
                 return self.BACKUPED_SYMBOL
+            else:
+                return self.BACKUPING_SYMBOL
         elif zip_file:
                 return self.BACKUPED_ERROR_SYMBOL
         else:
@@ -237,21 +254,18 @@ class BackupApp:
             messagebox.showwarning("警告", "请选择要备份的模型")
             return
 
-        self.backup_btn.config(state=tk.DISABLED)
-        threading.Thread(target=self.run_backup, args=(selected_models,)).start()
-
-    def run_backup(self, models):
-        try:
-            self.controller.run_backup(models)
-        except Exception as e:
-            logger.error(f"备份过程中发生错误: \n{traceback.format_exc()}")
-            self.thread_safe_messagebox("备份错误", f"备份失败！", "error")
-        finally:
-            try:
-                if self.master and self.master.winfo_exists():
-                    self.master.after(0, lambda: self.backup_btn.config(state=tk.NORMAL))
-            except:
-                pass
+        self.controller.run_backup(selected_models)
+        # threading.Thread(target=self.run_backup, args=(selected_models,)).start()
+    
+    def cancle_backup(self, model_name: str, status: str)->bool:
+        if status == self.BACKUPING_SYMBOL:
+            msg_info = "正在备份中，确定取消备份吗？"
+        else:
+            msg_info = "排队备份中，确定取消备份吗？"
+        if not messagebox.askyesno("确认", msg_info):
+            return False
+        self.controller.cancle_backup(model_name)
+        return True
 
     def _update_model_path(self):
         self.model_path = self.model_path_var.get()

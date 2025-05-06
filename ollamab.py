@@ -63,10 +63,10 @@ def parse_model_file(model_file_path: str)->dict|None:
         logger.error(f"堆栈信息: {traceback.format_exc()}")
         return None
 
-def check_zip_file_integrity(zip_file: str)->bool:
+def check_zip_file_integrity(zip_file: str)->(bool,str|None):
     """
     检查zip文件的完整性，MD5校验。
-    :param zip_file: 要检查的zip文件路径, zip文件名组成：modelname_version_md5值.zip
+    :param zip_file: 要检查的zip文件路径, zip文件名组成：path/modelname_version_md5值.zip
     :return: 如果文件MD5校验通过，则返回True；否则返回False
     """
     logger.info(f"开始检查zip文件完整性: {zip_file}")

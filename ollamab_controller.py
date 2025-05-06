@@ -2,7 +2,6 @@ from queue import LifoQueue
 from tokenize import triple_quoted
 from typing import List, Dict
 import logging
-from utils.logging_config import setup_logging
 from ollamab import (
     clean_temp_files,
     parse_model_file,     
@@ -18,6 +17,9 @@ import traceback
 from models import ModelData, LLMModel, ModelBackupStatus
 from queue import Queue, Empty
 from pydantic import BaseModel
+from utils.logging_config import setup_logging
+from utils.AsyncExecutor import AsyncExecutor
+from functools import partial
 
 # 初始化日志配置
 logger = setup_logging(log_level=logging.DEBUG, log_tag="ollamab_controller")
@@ -31,10 +33,10 @@ class BackupController:
         self.model_path = model_path
         self.backup_path = backup_path
         self.model_data = ModelData()
+        self.asyncExcutor = AsyncExecutor(max_workers=int((os.cpu_count()*2)//3), max_processes=1, max_queue_size=10)
+        self.cancle_backup_models = []
 
-        self.cache_lock = threading.Lock()
-        self.model_cache = {}
-        self.isLoading = False
+        self.asyncExcutor.set_notify_processing(self._process_async_task_status)
     
     def chdir_path(self, model_path: str, backup_path: str) -> None:
         """切换工作目录"""
@@ -51,34 +53,109 @@ class BackupController:
         """重新检查备份状态"""
         return AsyncLoad.check_backup_status(self.model_path, self.backup_path)
 
+    @staticmethod
+    def _backup_one_model(model_path: str, model_dict: dict, zip_name: str) -> str:
+        """备份单个模型"""
+        zip_path = zip_model(model_path, model_dict, zip_name)
+        if zip_path:
+            zip_path = backup_zip(zip_path, backup_dir)
+            logger.info(f"备份完成: {zip_path}")
+            return zip_path
+        return None
+    
+    def _process_async_task_status(self, task_id: str) -> None:
+        """处理异步任务状态"""
+        self.model_data.update_backup_status(ModelBackupStatus(
+            model_name=task_id,
+            backup_path=self.backup_path,
+            backup_status=True,
+            zip_file=None
+        ))
+
+    def check_model_backup_status(self, model_name: str, zip_file: str = None) -> bool:
+        """检查模型备份状态"""
+        dest_path = zip_file
+        if zip_file == None:
+            backup_dir = self.backup_path
+            if not backup_dir or not os.path.exists(backup_dir):
+                return False
+            dest_path = os.path.join(backup_dir, backup_file)
+
+        backupde, zip_file = check_zip_file_integrity(dest_path)
+        self.model_data.update_backup_status(ModelBackupStatus(
+            model_name=model_name,
+            backup_path=self.backup_path,
+            backup_status=backupde,
+            zip_file=zip_file
+        ))
+        if backupde and zip_file:
+            return True
+        elif not backupde and zip_file:
+            #thread_safe_messagebox("文件损坏", f"备份文件{zip_file}校验失败，手动检查！", "warning")
+            return False
+        else:
+            return False        
+
+    def _backup_terminated(self, model_name: str, zip_name, result: any) -> None:
+        """备份完成回调"""
+        if isinstance(result, str) and os.path.exists(result):
+            logger.info(f"{model_name}备份完成: {result}")
+            self.model_data.update_backup_status(ModelBackupStatus(
+                model_name=model_name,
+                backup_path=self.backup_path,
+                backup_status=True,
+                zip_file=result,
+                zip_md5=result.split('_')[-1].split('.')[0]
+            ))
+        elif model_name in self.cancle_backup_models:
+            logger.info(f"{model_name}取消备份成功")
+            clean_temp_files(self.model_path, self.model_path, zip_name)
+        else:
+            logger.error(f"备份失败: {model_name}")
+            clean_temp_files(self.model_path, self.model_path)
+            res = self.asyncExcutor.execute_async(
+                self.check_model_backup_status, 
+                model_name, 
+                os.path.join(self.backup_path, zip_name),
+                is_long_task=False)
+            if not res:
+                logger.error(f"提交异步检查{model_name}备份失败后的文件状态的任务失败！")
+        
     def run_backup(self, models):
         logger.info(f"开始备份模型: {models}")
         try:
             for model in models:
                 logger.info(f"备份模型: {model}")
-                model_dict = self.get_model_detail_file(model)
-                if not model_dict:
-                    # 新增错误处理流程
-                    model_file = os.path.join(self.model_path,'manifests','registry.ollama.ai', 'library', *model.split(':', 1))
-                    logger.error(f"模型{model}的文件{model_file}缺失")
-                    # 这里需要与视图层交互，可通过回调函数实现
-                    continue
-
-                backup_dir = self.backup_path
-                seps = model_dict["model_file_path"].split(os.sep)
+                if model in self.cancle_backup_models:
+                    self.cancle_backup_models.remove(model)
+                model_dict = self._get_model_detail_file(model)
+                seps = model_dict.model_file_path.split(os.sep)
                 zip_name = "backup_" + ((seps[-2]+"_") if seps[-2] else '') + seps[-1] + ".zip"
                 logger.debug(f"zip_name: {zip_name}")
-                if self.check_backup_status(zip_name):
-                    logger.info(f"备份文件已存在")
+                res = self.asyncExcutor.execute_async(model, 
+                        self._backup_one_model,
+                        self.model_path, model_dict.model_dump(), zip_name,
+                        is_long_task=True, 
+                        callback=partial(self._backup_terminated, model, zip_name)
+                )
+                if not res:
+                    logger.error(f"提交异步备份模型失败: {model}")
                     continue
-                zip_path = zip_model(self.model_path, model_dict, zip_name)
-                if zip_path:
-                    zip_path = backup_zip(zip_path, backup_dir)
-                    logger.info(f"备份完成: {zip_path}")
-            logger.info("所有模型备份完成！")
+                if not self.asyncExcutor.is_queued(model):
+                    self.model_data.update_backup_status(ModelBackupStatus(
+                        model_name=model,
+                        backup_path=self.backup_path,
+                        backup_status=True,
+                        zip_file=None
+                    ))
+
         except Exception as e:
             logger.error(f"备份过程中发生错误: \n{traceback.format_exc()}")
-            clean_temp_files(self.model_path, self.model_path)
+    
+    def cancle_backup(self, model_name: str) -> None:
+        """取消备份"""
+        self.cancle_backup_models.append(model_name)
+        self.asyncExcutor.cancel_task(model_name)
 
     def _get_model_detail_file(self, model_name, model_file=None)->ModelDatialFile|None:
         llmmodel = self.model_data.get_model(model_name)
@@ -114,20 +191,6 @@ class BackupController:
                             'digests': model_dict.get('digests', [])
                         })
         return models
-
-    def check_backup_status(self, backup_file: str)->bool:
-        backup_dir = self.backup_path
-        if not backup_dir or not os.path.exists(backup_dir):
-            return False
-        dest_path = os.path.join(backup_dir, backup_file)
-        backupde, zip_file = check_zip_file_integrity(dest_path)
-        if backupde and zip_file:
-            return True
-        elif not backupde and zip_file:
-            #thread_safe_messagebox("文件损坏", f"备份文件{zip_file}校验失败，手动检查！", "warning")
-            return False
-        else:
-            return False
 
 class AsyncLoad:
     model_cache = {}
