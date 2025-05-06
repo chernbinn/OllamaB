@@ -153,6 +153,7 @@ class AsyncExecutor:
         self._process_lock = self._manager.Lock()  # 共享锁
 
         self._latest_task:Dict = None  # 最近提交的任务ID
+        self._notify_processing = None
 
         self._start_event_loop()        
 
@@ -237,19 +238,26 @@ class AsyncExecutor:
                 return False
             return True
 
+    def set_notify_processing(self, notify_func: Callable[[str], None]):
+        """设置通知函数"""
+        with self._lock:
+            self._notify_processing = notify_func
+
     @staticmethod
     def _run_long_task(tid: str, func: Callable, args: tuple, kwargs: dict,
                       pids: DictProxy, lock: Any) -> Any:
         """静态方法确保可序列化"""
         pid = os.getpid()
         logger.info(f"Running long task {tid} in process {pid}")
+        logger.debug(f"---func: {str(func)}")
         try:
             with lock:
                 pids[tid] = pid
-
+            
             return func(*args, **kwargs)
         except Exception as e:
             logger.error(f"Task: {tid} failed: {e.args}")
+            logger.error(traceback.format_exc())
             return e
         finally:
             with lock:
@@ -370,7 +378,7 @@ class AsyncExecutor:
         # 但是使用partial可以避免lambda的闭包问题，同时也可以传递参数
         future.add_done_callback(partial(self._done_callback, task_id, callback))
         self._running_tasks[task_id] = {"future": future, "is_long_task": is_long_task}
-        
+        self._notify_processing(task_id)
 
     def _restart_process_pool(self):
         logger.warning("Restarting process pool due to broken state")
@@ -417,6 +425,12 @@ class AsyncExecutor:
             task_id = self._latest_task.get('task_id', None)
             task_data = self._latest_task
         """
+        if any([
+            not self._queued_tasks,
+            len(self._queued_tasks) == 0
+        ]) and not self._latest_task:
+            logger.info(f"Queue is empty, no task to process")
+            return
         task_id, task_data = next(iter(self._queued_tasks.items()))
 
         callback = task_data.get('callback')
@@ -573,6 +587,11 @@ class AsyncExecutor:
                 'queued': list(self._queued_tasks.keys()),
                 'processes': dict(self._process_pids)
             }
+    
+    def is_queued(self, task_id: str) -> bool:
+        """检查任务是否在队列中"""
+        with self._lock:
+            return task_id in self._queued_tasks
 
     def set_concurrency(self, max_workers: int, max_processes: int):
         self._thread_pool._max_workers = max_workers
