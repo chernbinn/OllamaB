@@ -5,7 +5,6 @@ from typing import Callable, Any, Dict, Optional, Union
 from concurrent.futures import Future, ThreadPoolExecutor, ProcessPoolExecutor
 from functools import partial
 from queue import Queue
-import logging, os
 import logging
 import time
 from multiprocessing.managers import DictProxy
@@ -16,18 +15,7 @@ import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.logging_config import setup_logging
 
-"""
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('test.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)  # 输出到控制台
-    ]
-)
-logger = logging.getLogger(__name__)
-"""
-logger = setup_logging(log_level=logging.DEBUG)
+logger = setup_logging(log_level=logging.DEBUG,b_log_file=False)
 
 class ProcessTerminator:
     @staticmethod
@@ -273,6 +261,7 @@ class AsyncExecutor:
 
         try:
             result = future.result()
+            logger.debug(f"normal result: {result}")
         except Exception as e:
             result = e#RuntimeError(e)
         
@@ -280,9 +269,11 @@ class AsyncExecutor:
         if isinstance(result, Exception):
             if isinstance(result, (concurrent.futures.CancelledError, asyncio.CancelledError)):
                 logger.debug(f"Task: {task_id} is cancelled")
-                result_type = CancellationSignal()  # 特殊标记对象
+                #result_type = CancellationSignal()  # 特殊标记对象
             elif isinstance(result, concurrent.futures.process.BrokenProcessPool):                
-                self._restart_process_pool()
+                # self._restart_process_pool()
+                #result_type = CancellationSignal()
+                pass
             result = RuntimeError(result)
             logger.error(f"Task: {task_id} occur exception, args: {result.args}")
         logger.info(f"Task: {task_id} completed with result: {result}")
@@ -296,20 +287,19 @@ class AsyncExecutor:
                 if not self._callback_direct:
                     self._callback_queue.put((callback, result))
                 future = self._running_tasks.get(task_id, {}).get('future')
-                self._process_pids.pop(task_id, None)
-                self._running_tasks.pop(task_id, None)
                 if future and future.done():
                     self._cleanup_task(task_id)
                     if not isinstance(result_type, CancellationSignal):
+                        logger.info(f"Task: {task_id} completed, precessing next queued task")
                         self._process_next_queued_task()
 
             if all([callback and isinstance(callback, Callable),
                     exist_id and is_callback
                     ]):
-                callback(result)
+                callback(result)            
 
     def _cleanup_task(self, task_id: str):
-        """清理任务资源的公共方法"""
+        """清理任务资源的公共方法"""        
         self._process_pids.pop(task_id, None)
         self._running_tasks.pop(task_id, None)
 
@@ -342,7 +332,7 @@ class AsyncExecutor:
                             self._process_pids, self._process_lock
                         )
                     except concurrent.futures.process.BrokenProcessPool as e:
-                        logger.error("Process pool broken, restarting...")
+                        logger.error(f"Task: {task_id} failed.Process pool broken, going to restart ...")
                         #self._restart_process_pool()
                         result = e
                 else:
@@ -388,6 +378,9 @@ class AsyncExecutor:
         self._process_pool = ProcessPoolExecutor(
             max_workers=self._process_pool._max_workers
         )
+        for task_id in list(self._process_pids.keys()):
+            self._process_pids.pop(task_id, None)
+            self._running_tasks.pop(task_id, None)
 
     def _process_next_queued_task(self) -> None:
         """ 如果最近提交的任务执行成功，并且队列中还有任务，那么立即执行队列中的任务 
@@ -397,6 +390,8 @@ class AsyncExecutor:
         """
         logger.info(f"Processing next queued task, current queue size: {len(self._queued_tasks)}")
 
+        """ 根据实际测试，任务提交失败也会回到执行_done_callback, 所以这里不需要判断任务是否执行成功 """
+        """
         task_id = None
         if self._latest_task:
             task_id = self._latest_task.get('task_id', None)
@@ -421,6 +416,8 @@ class AsyncExecutor:
         else:
             task_id = self._latest_task.get('task_id', None)
             task_data = self._latest_task
+        """
+        task_id, task_data = next(iter(self._queued_tasks.items()))
 
         callback = task_data.get('callback')
         is_long_task = task_data.get('is_long_task')
@@ -429,6 +426,7 @@ class AsyncExecutor:
             is_long_task and len(self._process_pids) >= self._process_pool._max_workers,
             not is_long_task and len(self._running_tasks) >= self._thread_pool._max_workers
         ]):
+            logger.info(f"Execut unit is full, need to wait for some time")
             return
 
         if self._process_pool._broken:  # 检查进程池是否健康
@@ -445,7 +443,11 @@ class AsyncExecutor:
             )
         except Exception as e:
             logger.error(f"Failed to submit queued task {task_id}: {e}")
-        self._queued_tasks.pop(task_id)
+        # 留作测试ansync中未捕获异常如何输出到日志文件
+        # self._queued_tasks.pop(task_id)
+        # self._queued_tasks.pop(task_id)
+        if task_id in self._queued_tasks:
+            self._queued_tasks.pop(task_id, None)
 
     def process_callbacks(self) -> None:
         """在主线程中处理回调（需要在主线程定期调用）"""
@@ -523,8 +525,10 @@ class AsyncExecutor:
                 try:
                     if ProcessTerminator.terminate(pid):
                         logger.info(f"Process {pid} terminated")
+                        """
                         if self._process_pool._broken:  # 检查进程池是否健康
                             self._restart_process_pool()
+                        """
                     else:
                         logger.warning(f"Failed to terminate process {pid}")
                 except Exception as e:
@@ -539,11 +543,12 @@ class AsyncExecutor:
             cancle_result = self._future_cancle(future, timeout)
 
         if cancle_result:
-            with self._lock:
+            with self._lock: 
                 if future.done():
                     logger.info(f"Task {task_id} completed after cancellation")
                     self._running_tasks.pop(task_id, None)
-                    self._process_next_queued_task()
+                    """ cancle成功后，会调用_done_callback,在回调中提交下一个任务 """
+                    # self._process_next_queued_task()
                 if not self.check_process_alive(exist_pid):
                     logger.info(f"Process {exist_pid} terminated after cancellation")
                     self._process_pids.pop(task_id, None)
@@ -712,16 +717,17 @@ if __name__ == "__main__":
     executor = AsyncExecutor(max_workers=2, max_queue_size=3)
     logger.debug("Executor initialized successfully")
 
+    executor.set_concurrency(max_workers=3, max_processes=2)
     # 测试正常任务
     logger.debug("\n=== Testing normal execution ===")
-    #executor.execute_async("task1", long_running_task, 5, "Task1", is_long_task=False, callback=task_callback)
-    #executor.execute_async("task2", long_running_task, 3, "Task2", is_long_task=False,callback=task_callback)
+    #executor.execute_async("task1", long_running_task, 100, "Task1", is_long_task=False, callback=task_callback)
+    #executor.execute_async("task2", long_running_task, 100, "Task2", is_long_task=False,callback=task_callback)
     #executor.execute_async("task21", long_running_task, 6, "Task21", is_long_task=False,callback=task_callback)
     #executor.execute_async("task22", long_running_task, 8, "Task22", is_long_task=False,callback=task_callback)
     #executor.execute_async("task3", LongTask.long_running_task, 5, "Task3", is_long_task=True, callback=task_callback)
     executor.execute_async("task4", LongTask.long_running_task, 100, "Task4", is_long_task=True, callback=task_callback)
     executor.execute_async("task5", LongTask.long_running_task, 100, "Task5", is_long_task=True)
-    #executor.execute_async("task6", LongTask.long_running_task, 4, "Task6", is_long_task=True, callback=task_callback)
+    executor.execute_async("task6", LongTask.long_running_task, 100, "Task6", is_long_task=True, callback=task_callback)
     #logger.debug(f"is_task_active(task3): {executor.is_task_active("task3")}")
 
      # 提交任务
