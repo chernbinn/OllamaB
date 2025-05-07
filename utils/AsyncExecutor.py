@@ -264,7 +264,7 @@ class AsyncExecutor:
             try:
                 self._submit_task(task_id, func, is_long_task, callback, *args, **kwargs)
             except Exception as e:
-                logger.error(f"Failed to submit task {task_id}: {e.args}")
+                logger.error(f"Failed to submit task {task_id}: {e.args}", exc_info=True)
                 return False
             return True
 
@@ -380,7 +380,7 @@ class AsyncExecutor:
                     )
                 return result
             except Exception as e:
-                    logger.error(f"Task: {task_id} failed: {e}")
+                    logger.error(f"Task: {task_id} failed: {e}", exc_info=True)
                     return e
 
         if False: #is_long_task:
@@ -408,7 +408,8 @@ class AsyncExecutor:
         # 但是使用partial可以避免lambda的闭包问题，同时也可以传递参数
         future.add_done_callback(partial(self._done_callback, task_id, callback))
         self._running_tasks[task_id] = {"future": future, "is_long_task": is_long_task}
-        self._notify_processing(task_id)
+        if self._notify_processing:
+            self._notify_processing(task_id)
 
     def _restart_process_pool(self):
         logger.warning("Restarting process pool due to broken state")
@@ -458,7 +459,7 @@ class AsyncExecutor:
         if any([
             not self._queued_tasks,
             len(self._queued_tasks) == 0
-        ]) and not self._latest_task:
+        ]):
             logger.info(f"Queue is empty, no task to process")
             return
         task_id, task_data = next(iter(self._queued_tasks.items()))
