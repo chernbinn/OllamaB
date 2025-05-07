@@ -135,12 +135,15 @@ class AsyncExecutor:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
         return cls._instance    
 
-    def __init__(self, *, max_workers: int = 2, 
+    def __init__(self, *, max_workers: int = int((os.cpu_count()*2)//3), 
                         max_processes: int = 1,
                         max_queue_size: int = 10, 
                         callback_direct: bool = True):
+        if self._initialized:
+            return
         self._thread_pool = ThreadPoolExecutor(max_workers=max_workers)
         self._process_pool = ProcessPoolExecutor(max_workers=max_processes)
         #self._running_tasks: Dict[str, Dict[Future, bool]] = {}
@@ -164,7 +167,8 @@ class AsyncExecutor:
         self._latest_task:Dict = None  # 最近提交的任务ID
         self._notify_processing = None
 
-        self._start_event_loop()        
+        self._initialized = True
+        self._start_event_loop() 
 
     def _start_event_loop(self) -> None:
         """在后台线程启动事件循环"""
@@ -809,3 +813,7 @@ if __name__ == "__main__":
     logger.debug("\n=== Testing shutdown ===")
     executor.shutdown()
     logger.debug("Executor shutdown complete")
+
+# 模块级别的代码包含直接创建多进程的代码（如Manager()），就会导致递归创建进程
+# 因此，以下代码不可以在模块级别的代码中使用，否则会导致递归创建进程
+# AsyncExecutor(max_workers=int((os.cpu_count()*2)//3), max_processes=1, max_queue_size=10)
