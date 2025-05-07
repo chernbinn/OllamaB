@@ -6,6 +6,7 @@ import logging
 from utils.logging_config import setup_logging
 from threading import Lock
 from enum import Enum
+from functools import wraps
 
 # 初始化日志配置
 logger = setup_logging(log_level=logging.DEBUG, log_tag="models")
@@ -27,6 +28,12 @@ class LLMModel(BaseModel):
     blobs: List[str]
     bk_status: Optional[ModelBackupStatus] = None
 
+class Blobs(BaseModel):
+    sha256: str
+    size: int
+    path: str
+    md5: str
+
 class ProcessEvent(Enum):
     WINDOW_INFO = 1
     WINDOW_ERR = 2
@@ -39,6 +46,18 @@ class ProcessEvent(Enum):
 class ProcessStatus(BaseModel):
     event: ProcessEvent|None = None
     message: str|int|None = None
+
+def call_once(func):
+    lock = Lock()
+    @wraps(func) # 保留原函数func的元数据信息，如名称、文档字符串等。便于调试和错误追踪。
+    def wrapper(self, *args, **kwargs):
+        if not hasattr(self, '_called'):
+            with lock:
+                if not hasattr(self, '_called'):
+                    setattr(self, '_called', True)
+                    return func(self, *args, **kwargs)
+        logger.warning(f"{func.__name__} already called")
+    return wrapper
 
 @runtime_checkable
 class ModelObserver(Protocol):
@@ -58,13 +77,26 @@ class ModelData:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
+                    cls._instance._instance_initialized = False
+                    cls._instance._init(*args, **kwargs)
         return cls._instance
 
-    def __init__(self, batch_size: int = 5):
+    def __init__(self):
+        # __new__和__init__是分离执行的，多线程情况下存在__new__返回实例后，调用函数，
+        # 但是__init__还没有执行的情况，所以需要加锁，确保只有一个实例在初始化。
+        # 其实，在多线程下，即使加锁也存在属性未被初始化情况，好的方式是使用工厂模式或者初始化放在__new__中
+        # 现在该方法可以留空且不需要_instance_initialized
+        # 非单例模式下，__new__和__init__是一个原子操作，因此不存在初始化问题。
+        # 单例模式下，本质上__new__和__init__是一体执行的，只是多线程情况下存在__new__返回实例后，调用函数
+        pass
+    
+    @call_once
+    def _init(self) -> None:
+        """ 只可以被__new__调用一次，用于初始化单例模式下的属性，可以根据需求添加客制化参数 """
         self._models: Dict = {}
         self._observers: List[ModelObserver] = []
+        self._blobs: Dict[str, Blobs] = {}                
         self._initialized: bool = False
-        self._lock = Lock()  # 添加锁对象
         self._process_event: ProcessEvent = ProcessStatus(event=None, message="就绪")
 
     def add_observer(self, observer: ModelObserver) -> None:
@@ -163,3 +195,13 @@ class ModelData:
         """设置初始化状态"""
         self._process_event = value
         self._notify_observers("notify_process_status", value)
+    
+    @property
+    def blobs(self) -> Dict[str, Blobs]:
+        return self._blobs
+    def add_blob(self, blob: Blobs) -> None:
+        """添加 Blob 信息"""
+        self._blobs[blob.sha256] = blob
+    def get_blob(self, sha256: str) -> Optional[Blobs]:
+        """获取 Blob 信息"""
+        return self._blobs.get(sha256, None)

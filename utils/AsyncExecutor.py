@@ -3,7 +3,7 @@ import threading
 import concurrent.futures
 from typing import Callable, Any, Dict, Optional, Union
 from concurrent.futures import Future, ThreadPoolExecutor, ProcessPoolExecutor
-from functools import partial
+from functools import partial, wraps
 from queue import Queue
 import logging
 import time
@@ -115,6 +115,18 @@ class CancellationSignal:
     """用于标记任务被取消的特殊对象"""
     pass
 
+def call_once(func):
+    lock = Lock()
+    @wraps(func) # 保留原函数func的元数据信息，如名称、文档字符串等。便于调试和错误追踪。
+    def wrapper(self, *args, **kwargs):
+        if not hasattr(self, '_called'):
+            with lock:
+                if not hasattr(self, '_called'):
+                    setattr(self, '_called', True)
+                    return func(self, *args, **kwargs)
+        logger.warning(f"{func.__name__} already called")
+    return wrapper
+
 class AsyncExecutor:
     SHUTDOWN = 0
     LOOP_NOT_READY = 1
@@ -136,9 +148,14 @@ class AsyncExecutor:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
                     cls._instance._initialized = False
-        return cls._instance    
+                    cls._instance._init(*args, **kwargs)
+        return cls._instance
+    
+    def __init__(self):
+        pass
 
-    def __init__(self, *, max_workers: int = int((os.cpu_count()*2)//3), 
+    @call_once
+    def _init(self, *, max_workers: int = int((os.cpu_count()*2)//3), 
                         max_processes: int = 1,
                         max_queue_size: int = 10, 
                         callback_direct: bool = True):
