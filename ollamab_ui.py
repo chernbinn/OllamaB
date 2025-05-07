@@ -65,6 +65,7 @@ class BackupApp:
     
     def init(self):
         """ 异步初始化，不可以初始化UI组件。不可以直接刷新UI """
+        logger.info("开始初始化...")
         self.controller = BackupController(self.model_path, self.backup_path)
         # 初始化数据模型和观察者
         self.model_data = ModelData()
@@ -272,6 +273,8 @@ class BackupApp:
                 self.tree.item(item, values=(value,))
                 found = True
                 break
+        if not found:
+            self.add_model(model)
 
     def update_backup_status(self, status: ModelBackupStatus)->None:
         for item in self.tree.get_children():
@@ -342,7 +345,6 @@ class BackupApp:
         if path:
             path = str(Path(path))
             self.backup_path_var.set(path)
-            self.backup_path = path  # 更新实例变量
     
     def choose_model_dir(self):
         """选择模型路径"""
@@ -350,7 +352,6 @@ class BackupApp:
         if path:
             path = str(Path(path))
             self.model_path_var.set(path)
-            self.model_path = path  # 更新实例变量
 
     def update_treeview(self):
         self.tree.delete(*self.tree.get_children())

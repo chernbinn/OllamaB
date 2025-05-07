@@ -29,10 +29,10 @@ class LLMModel(BaseModel):
     bk_status: Optional[ModelBackupStatus] = None
 
 class Blobs(BaseModel):
-    sha256: str
+    name: str
     size: int
-    path: str
     md5: str
+    path: str    
 
 class ProcessEvent(Enum):
     WINDOW_INFO = 1
@@ -135,19 +135,32 @@ class ModelData:
     def add_model(self, model: LLMModel) -> None:
         logger.debug(f"添加模型: {model.name}")
         """添加模型并通知观察者"""
-        self._models[model.name] = model
-        self._notify_observers("notify_add_model", copy.deepcopy(model))
+        with self._lock:  # 获取锁
+            new = True
+            if model.name in self._models:
+                bk_status = self._models[model.name].bk_status
+                model.bk_status = bk_status
+                new = False
+            self._models[model.name] = model
+        if new:
+            self._notify_observers("notify_add_model", copy.deepcopy(model))
+        else:
+            self._notify_observers("notify_update_model", copy.deepcopy(model))
 
     def delete_model(self, model: LLMModel) -> None:
         """删除模型并通知观察者"""
-        if self._models.pop(model.name, None):
-            self._notify_observers("notify_delete_model", model)
-        else:
-            logger.warning(f"尝试删除不存在的模型: {model.name}")
+        with self._lock:
+            if not self._models.pop(model.name, None):
+                logger.warning(f"尝试删除不存在的模型: {model.name}")
+        self._notify_observers("notify_delete_model", model)
 
     def update_model(self, model: LLMModel) -> None:
         """更新模型并通知观察者"""
-        self._models[model.name] = model
+        with self._lock:
+            if model.name in self._models:
+                bk_status = self._models[model.name].bk_status
+                model.bk_status = bk_status
+            self._models[model.name] = model
         self._notify_observers("notify_update_model", copy.deepcopy(model))
 
     def update_backup_status(self, status: ModelBackupStatus) -> None:
@@ -158,50 +171,83 @@ class ModelData:
             zip_file = status.zip_file
             zip_md5 = zip_file.split('_')[-1].split('.')[0]
             status.zip_md5 = zip_md5
-        
-        self._models[model_name].bk_status = status
+        with self._lock:
+            if model_name not in self._models:
+                self.models[model_name] = LLMModel(
+                    model_path=None,
+                    name=model_name,
+                    description="",
+                    llm="",
+                    version="",
+                    manifest="",
+                    blobs=[],
+                    bk_status=status
+                )
+            self._models[model_name].bk_status = status
         self._notify_observers("notify_update_backup_status", copy.deepcopy(status))
 
     def get_backup_status(self, model_name: str) -> Optional[str]:
         """获取模型备份状态"""
-        return self._models.get(model_name, {}).get("bk_status", None)
+        with self._lock:
+            try:
+                return copy.deepcopy(self._models.get(model_name, {}).get("bk_status", None))
+            except Exception as e:
+                logger.error(f"获取备份状态时出错: {e}", exc_info=True)
+                return None
 
     @property
     def models(self) -> List[LLMModel]:
-        """获取所有模型"""        
-        return copy.deepcopy(self._models.values())  # 使用深拷贝返回副本防止外部修改
+        """获取所有模型"""
+        with self._lock:
+            try:
+                return copy.deepcopy(self._models.values())  # 使用深拷贝返回副本防止外部修改
+            except Exception as e:
+                logger.error(f"获取模型列表时出错: {e}", exc_info=True)
+                return []
     
     def get_model(self, model_name: str) -> Optional[LLMModel]:
         """获取指定模型"""
-        return self._models.get(model_name, None)
+        with self._lock:
+            try:
+                return copy.deepcopy(self._models.get(model_name, None))  # 使用深拷贝返回副本防止外部修改
+            except Exception as e:
+                logger.error(f"获取模型时出错: {e}", exc_info=True)
+                return None
 
     @property
     def initialized(self) -> bool:
         """是否已完成初始化"""
-        return self._initialized
+        with self._lock:
+            return self._initialized
 
     @initialized.setter
     def initialized(self, value: bool) -> None:
         """设置初始化状态"""
-        self._initialized = value
+        with self._lock:
+            self._initialized = value
         self._notify_observers("notify_initialized", value)
 
     @property
     def process_event(self) -> ProcessEvent:
-        return self._process_event
+        with self._lock:
+            return self._process_event
 
     @process_event.setter
     def process_event(self, value: ProcessEvent) -> None:
         """设置初始化状态"""
-        self._process_event = value
+        with self._lock:
+            self._process_event = value
         self._notify_observers("notify_process_status", value)
     
     @property
     def blobs(self) -> Dict[str, Blobs]:
-        return self._blobs
+        with self._lock:
+            return copy.deepcopy(self._blobs)
     def add_blob(self, blob: Blobs) -> None:
         """添加 Blob 信息"""
-        self._blobs[blob.sha256] = blob
-    def get_blob(self, sha256: str) -> Optional[Blobs]:
+        with self._lock:
+            self._blobs[blob.name] = blob
+    def get_blob(self, name: str) -> Optional[Blobs]:
         """获取 Blob 信息"""
-        return self._blobs.get(sha256, None)
+        with self._lock:
+            return self._blobs.get(name, None)
