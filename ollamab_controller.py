@@ -1,5 +1,4 @@
-from queue import LifoQueue
-from tokenize import triple_quoted
+import hashlib
 from typing import List, Dict
 import logging
 from ollamab import (
@@ -13,8 +12,7 @@ from ollamab import (
 )
 import os
 import threading
-import traceback
-from models import ModelData, LLMModel, ModelBackupStatus
+from models import ModelData, LLMModel, ModelBackupStatus, Blobs
 from queue import Queue, Empty
 from pydantic import BaseModel
 from utils.logging_config import setup_logging
@@ -37,6 +35,7 @@ class BackupController:
         self.cancle_backup_models = []
 
         self.asyncExcutor.set_notify_processing(self._process_async_task_status)
+        self.asyncExcutor.set_concurrency(7, 1)
     
     def chdir_path(self, model_path: str, backup_path: str) -> None:
         """切换工作目录"""
@@ -110,7 +109,7 @@ class BackupController:
         zip_name = self._get_zip_name(model_name)
         res = self.asyncExcutor.execute_async(
             f"zipcheck_{model_name}", # task_id
-            AsyncLoad._check_model_backup_status, # task_func
+            AsyncLoad.check_model_backup_status, # task_func
             model_name,  # func_args
             os.path.join(self.backup_path, zip_name), # func_args
             is_long_task=False) # is_long_task
@@ -147,7 +146,7 @@ class BackupController:
                     ))
 
         except Exception as e:
-            logger.error(f"备份过程中发生错误: \n{traceback.format_exc()}")
+            logger.error(f"备份过程中发生错误: {e}", exc_info=True)
     
     def cancle_backup(self, model_name: str) -> None:
         """取消备份"""
@@ -207,195 +206,136 @@ class BackupController:
 
 
 class AsyncLoad:
-    model_cache = {}
-    cache_lock = threading.Lock()
+    # 外部实例对象
+    async_executor = None
     model_data = ModelData()
-    _stop_event = threading.Event()
-    _data_ready_event = threading.Event()
-    model_queue = Queue()
-    task_list = []
-    task_lock = threading.Lock()
-
+    # 外部参数
     model_path = None
     backup_path = None
-    isLoading = False
+    # 内部参数
+    _lock = threading.Lock()  
+    _isLoading = False    
+    _data_stop_event = threading.Event()
+    _data_ready_event = threading.Event()
+    _model_queue = Queue()
+    _task_list = []
     
     @classmethod
     def init(cls, model_path: str, backup_path: str):
-        cls.model_path = model_path
-        cls.backup_path = backup_path        
+        with cls._lock:
+            cls.model_path = model_path
+            cls.backup_path = backup_path        
 
-        cls.isLoading = False
-        cls.isChecking = False
-        while not cls.model_queue.empty():
-            cls.model_queue.get()
-        cls._stop_event.clear()
-        cls._data_ready_event.clear()
+            # UI数据全部加载后，通知UI数据加载完成
+            cls._isLoading = False
 
-        cls.async_executor = AsyncExecutor()
+            # 初始化模型数据变量，不包含备份情况和blobs文件大小
+            while not cls._model_queue.empty():
+                cls._model_queue.get()
+            cls._data_stop_event.clear()
+            cls._data_ready_event.clear() 
+            cls._task_list = []
+
+            cls.async_executor = AsyncExecutor()
+            cls.async_executor.set_concurrency(5, 1)
 
     @classmethod
     def load_models(cls, model_path: str, backup_path: str):
-        if cls.isLoading:
-            logger.warning("数据加载任务正在进行中，跳过启动")
-            return
-        cls.isLoading = True
-        cls.model_data.initialized = False
+        with cls._lock:
+            if cls._isLoading:
+                logger.warning("数据加载任务正在进行中，跳过启动")
+                return
+       
         cls.init(model_path, backup_path)
-        # 启动阶段一任务（模型信息加载）
-        init_thread = threading.Thread(
-            target=cls._init_models_task,
-            args=(cls.model_queue,),
-            daemon=True
-        )
-        init_thread.start()
-        # 启动阶段二任务（备份状态检查）
-        check_thread = threading.Thread(
-            target=cls._check_backup_task,
-            args=(cls.model_queue,),
-            daemon=True
-        )
-        check_thread.start()
-        """
-        cls.task_list.append("load_blobs")
+        with cls._lock:
+            cls._isLoading = True
+            cls.model_data.initialized = False
+
+        cls._init_models_thread()
+        cls._check_dirbackup_thread()
+
+        with cls._lock:
+            cls._task_list.append("load_blobs")
         cls.async_executor.execute_async(
             "load_blobs",
             cls._iter_blobs_task,
             is_long_task=False,
-            #callback=partial(cls._async_loading_task_done, cls)
+            callback=partial(cls._async_loading_task_done, "load_blobs")
         )
-        """
     
     @classmethod
     def check_backup_status(cls, model_path:str, backup_path: str)->bool:
         if not backup_dir or not os.path.exists(backup_dir):
             return True
-        if cls.isLoading:
-            logger.warning("备份状态检查任务正在进行中，跳过启动")
-            return False
-        cls.isLoading = True
+
+        with cls._lock:
+            if cls._isLoading:
+                logger.warning("数据加载任务正在进行中，跳过启动")
+                return False
+
         self.model_data.process_event = ProcessStatus(event=None, message="检查备份状态中...")
         cls.init(model_path, backup_path)
-        init_thread = threading.Thread(
-            target=cls._get_models_task,
-            args=(model_queue,),
-            daemon=True
-        )
-        init_thread.start()
-        # 启动阶段二任务（备份状态检查）
-        check_thread = threading.Thread(
-            target=cls._check_backup_task,
-            args=(model_queue,),
-            daemon=True
-        )
-        check_thread.start()
-    
-    @classmethod
-    def _get_models_task(cls, model_queue: Queue):
-        try:
-            models = cls.model_data.models
-            _data_ready_event.set()
-            for model in models:
-                model_queue.put([model.name, f"backup_{model.llm}_{model.version}.zip"])
-        finally:
-            cls._stop_event.set()
-    
-    @classmethod
-    def _iter_llm_task(cls, llm: str, llm_path: str, model_queue: Queue):
-        logger.info(f"开始迭代LLM: {llm}")
-        for version in os.listdir(llm_path):
-            try:
-                model_file = os.path.join(cls.model_path, 'manifests', 'registry.ollama.ai', 'library', llm, version)
-                model_dict = cls._get_model_detail_file(f"{llm}:{version}", model_file)
-                logger.debug(f"模型信息: {model_file}")
-                if model_dict:
-                    cls.model_data.add_model(LLMModel(**{
-                        'model_path': cls.model_path,
-                        'name': f"{llm}:{version}",
-                        'description': f"{llm}:{version}",
-                        'llm': llm,
-                        'version': version,
-                        'manifest': os.path.relpath(model_dict.get('model_file_path', ""), cls.model_path),
-                        'blobs': model_dict.get('digests', []),
-                        'bk_status': None,
-                        }))
-                    model_queue.put([f"{llm}:{version}", f"backup_{llm}_{version}.zip"])
-            except Exception as e:
-                logger.error(f"初始化模型信息时出错: {e}")
-                logger.error(traceback.format_exc())
-                continue
 
+        with cls._lock:
+            cls._isLoading = True
+            cls.model_data.initialized = False
+        
+        cls._init_models_thread()
+        cls._check_dirbackup_thread()
+    
+    @classmethod
+    def _init_models_thread(cls):
+        with cls._lock:
+            cls._task_list.append("load_models")
+        cls.async_executor.execute_async(
+            "load_models",
+            cls._init_models_task if not cls.model_data.initialized else cls._get_models_task,
+            cls._model_queue,
+            is_long_task=False,
+            callback=partial(cls._async_loading_task_done, "load_models")
+        )
+    
+    @classmethod
+    def _check_dirbackup_thread(cls):
+        with cls._lock:
+            cls._task_list.append("check_allbackup")
+        cls.async_executor.execute_async(
+            "check_allbackup",
+            cls._check_backup_task,
+            cls._model_queue,
+            is_long_task=False,
+            callback=partial(cls._async_loading_task_done, "check_allbackup")
+        )
+    
     @classmethod
     def _init_models_task(cls, model_queue: Queue):
-        logger.info("第一阶段：开始初始化模型信息")
+        #logger.info("第一阶段：开始初始化模型信息")
         try:
             manifests_path = os.path.join(cls.model_path, 'manifests', 'registry.ollama.ai', 'library')
             if not os.path.exists(manifests_path):
                 logger.error(f"模型根目录结构异常: {manifests_path}")
-                cls._stop_event.set()
                 return
 
             cls._data_ready_event.set()
             for llm in os.listdir(manifests_path):
                 llm_path = os.path.join(manifests_path, llm)
-                with cls.task_lock:
-                    cls.task_list.append(f"loadllm_{llm}")
-                    cls.async_executor.execute_async(
-                        f"loadllm_{llm}",
-                        cls._iter_llm_task,
-                        llm, llm_path, model_queue,
-                        is_long_task=False,
-                        callback=partial(cls._async_loading_task_done, f"loadllm_{llm}")
-                    )
-                """
-                llm_path = os.path.join(manifests_path, llm)
-                if os.path.isdir(llm_path):
-                    for version in os.listdir(llm_path):
-                        try:
-                            model_file = os.path.join(cls.model_path, 'manifests', 'registry.ollama.ai', 'library', llm, version)
-                            model_dict = cls._get_model_detail_file(f"{llm}:{version}", model_file)
-                            logger.debug(f"模型信息: {model_file}")
-                            if model_dict:
-                                cls.model_data.add_model(LLMModel(**{
-                                    'model_path': cls.model_path,
-                                    'name': f"{llm}:{version}",
-                                    'description': f"{llm}:{version}",
-                                    'llm': llm,
-                                    'version': version,
-                                    'manifest': os.path.relpath(model_dict.get('model_file_path', ""), cls.model_path),
-                                    'blobs': model_dict.get('digests', []),
-                                    'bk_status': None,
-                                    }))
-                                model_queue.put([f"{llm}:{version}", f"backup_{llm}_{version}.zip"])
-                        except Exception as e:
-                            logger.error(f"初始化模型信息时出错: {e}")
-                            logger.error(traceback.format_exc())
-                            continue
-                """
+                for version in os.listdir(llm_path):
+                    logger.debug(f"----llm: {llm} version: {version}")
+                    cls._iter_model_task(llm, version, model_queue)
         finally:            
             logger.info("第一阶段：模型信息初始化完成")
-            # cls._stop_event.set()
-
+            cls._data_stop_event.set()
+    
     @classmethod
-    def _async_loading_task_done(cls, task_id: str, result: any)->None:
-        if not isinstance(result, Exception):
-            with cls.task_lock:
-                if task_id in cls.task_list:
-                    cls.task_list.remove(task_id)
-                exist_loadllm = False
-                for task in cls.task_list:
-                    if task.startswith("loadllm_"):
-                        exist_loadllm = True
-                        break
-                if not exist_loadllm:
-                    cls._stop_event.set()
-
-                if len(cls.task_list) == 0:
-                    cls.isLoading = False
-                    cls.model_data.initialized = True
-        else:
-            logger.error(f"检查备份状态时出错: {task_id}")
-
+    def _get_models_task(cls, model_queue: Queue):
+        try:
+            models = cls.model_data.models
+            cls._data_ready_event.set()
+            for model in models:
+                model_queue.put([model.name, f"backup_{model.llm}_{model.version}.zip"])
+        finally:
+            cls._data_stop_event.set()
+    
     @classmethod
     def _check_backup_task(cls, model_queue: Queue) -> None:
         """阶段二：并行执行备份检查"""
@@ -405,8 +345,8 @@ class AsyncLoad:
             if not cls._data_ready_event.wait(timeout=10):
                 logger.warning("等待阶段一数据超时，退出检查任务")
                 return
-            logger.debug(f"model_queue: {model_queue.qsize()} cls._stop_event.is_set(): {cls._stop_event.is_set()}")
-            while not (cls._stop_event.is_set() and model_queue.empty()):
+            logger.debug(f"model_queue: {model_queue.qsize()} cls._data_stop_event.is_set(): {cls._data_stop_event.is_set()}")
+            while not (cls._data_stop_event.is_set() and model_queue.empty()):
                 try:
                     model_name, zip_name = model_queue.get(block=True, timeout=1)
                     if model_name is None:
@@ -422,39 +362,35 @@ class AsyncLoad:
                         'zip_md5': None,
                     }))
                     """
-                    cls.task_list.append(f"loadcheck_{model_name}")
+                    with cls._lock:
+                        cls._task_list.append(f"loadcheck_{model_name}")
+                        logger.debug(f"loadcheck_{model_name}")
                     cls.async_executor.execute_async(
                         f"loadcheck_{model_name}",
-                        cls._check_model_backup_status,
+                        cls.check_model_backup_status,
                         model_name,
                         dest_path,
                         is_long_task=False,
                         callback=partial(cls._async_loading_task_done, f"loadcheck_{model_name}")
                     )
                 except Empty:
-                    if cls._stop_event.is_set():  # 检查是否应该退出
+                    if cls._data_stop_event.is_set():  # 检查是否应该退出
                         break
                     continue
                 except Exception as e:
-                    logger.error(f"检查备份状态时出错: {e}")
-                    logger.error(traceback.format_exc())
+                    logger.error(f"检查备份状态时出错: {e}", exc_info=True)
                     continue
         finally:
             logger.info("第二阶段：备份状态检查完成")
             """
-            cls.isLoading = False
+            cls._isLoading = False
             cls.model_data.initialized = True
             """
-
+    
     @classmethod
-    def _get_model_detail_file(cls, model_name, model_file:str=None, model_path:str=None)->ModelDatialFile|None:
+    def get_model_detail_file(cls, model_name, model_file:str=None, model_path:str=None)->ModelDatialFile|None:
         # 从缓存中获取模型信息
         logger.debug(f"获取模型信息: {model_name} {model_file}")  # 调试日志，确保正确获取模型名称
-        with cls.cache_lock:
-            model_dict = cls.model_cache.get(model_name)
-        if model_dict:
-            return model_dict
-
         if not model_path and cls.model_path:
             model_path = cls.model_path
         else:
@@ -466,40 +402,11 @@ class AsyncLoad:
             model_parts = model_name.lsplit(':', 1)
             model_file = os.path.join(cls.model_path,'manifests','registry.ollama.ai', 'library', *model_parts)
         logger.debug(f"解析模型文件: {model_file}")  # 调试日志，确保正确获取模型文件路径
-        if not os.path.exists(model_file):
-            # 深度遍历library目录结构寻找匹配路径
-            found = False
-            library_path = os.path.join(cls.model_path, 'manifests', 'registry.ollama.ai', 'library')
-            for root, dirs, files in os.walk(library_path):
-                # 跳过非末级目录
-                if dirs:
-                    continue
-                
-                # 逆向构建模型名称：父目录名/当前目录名
-                path_parts = os.path.relpath(root, library_path).split(os.sep)
-                if len(path_parts) == 1:
-                    current_model = path_parts[0]
-                else:
-                    current_model = f"{path_parts[-2]}:{path_parts[-1]}"
-
-                if current_model == model_name:
-                    model_file = root
-                    found = True
-                    break
-
-            if not found:
-                logger.error(f"未找到匹配的模型路径: {model_name}")
-                return None
-
         model_dict = parse_model_file(model_file)
-        if model_dict:
-            # 缓存模型信息
-            with cls.cache_lock:
-                cls.model_cache[model_name] = model_dict
         return model_dict
 
     @classmethod
-    def _check_model_backup_status(cls, model_name: str, zip_file: str = None) -> bool:
+    def check_model_backup_status(cls, model_name: str, zip_file: str = None) -> bool:
         """检查模型备份状态"""
         dest_path = zip_file
         if zip_file == None:
@@ -519,10 +426,35 @@ class AsyncLoad:
         if backupde and zip_file:
             return True
         elif not backupde and zip_file:
-            #thread_safe_messagebox("文件损坏", f"备份文件{zip_file}校验失败，手动检查！", "warning")
             return False
         else:
-            return False
+            return False    
+    
+    @classmethod
+    def _iter_model_task(cls, llm: str, version: str, model_queue: Queue)->any:
+        logger.info(f"开始加载: {llm}:{version}")
+        try:
+            model_file = os.path.join(cls.model_path, 'manifests', 'registry.ollama.ai', 'library', llm, version)
+            logger.debug(f"模型信息: {model_file}")
+            model_dict = cls.get_model_detail_file(f"{llm}:{version}", model_file)
+            
+            cls.model_data.add_model(LLMModel(**{
+                'model_path': cls.model_path,
+                'name': f"{llm}:{version}",
+                'description': f"{llm}:{version}",
+                'llm': llm,
+                'version': version,
+                'manifest': os.path.relpath(model_dict.get('model_file_path', ""), cls.model_path),
+                'blobs': model_dict.get('digests', []),
+                'bk_status': None,
+                }))
+            #dest_path = os.path.join(cls.backup_path, f"backup_{llm}_{version}.zip")
+            #cls._check_model_backup_status(f"{llm}:{version}", dest_path)
+            model_queue.put([f"{llm}:{version}", f"backup_{llm}_{version}.zip"])
+        except Exception as e:
+            logger.error(f"初始化模型信息时出错: {e}", exc_info=True)
+            return e
+        return True
     
     @classmethod
     def _iter_blobs_task(cls):
@@ -531,8 +463,44 @@ class AsyncLoad:
         # 遍历blobs目录
         blobs_path = os.path.join(cls.model_path,'blobs')
         if not os.path.exists(blobs_path):
-            logger.error(f"blobs目录不存在: {blobs_path}")
+            logger.warning(f"blobs目录不存在: {blobs_path}")
             return False
-        
+        for blob in os.listdir(blobs_path):
+            blob_path = os.path.join(blobs_path, blob)
+            if os.path.isfile(blob_path):
+                try:
+                    if cls.model_data.get_blob(blob):
+                        continue
+                    with cls._lock:
+                        cls._task_list.append(f"loadblob_{blob}")
+                    cls.async_executor.execute_async(
+                        f"loadblob_{blob}",
+                        lambda cls_ref, blob, blob_path: cls_ref.model_data.add_blob(Blobs(**{
+                            'name': blob,
+                            'size': os.path.getsize(blob_path),
+                            'md5': hashlib.md5(open(blob_path, 'rb').read()).hexdigest(),
+                            'path': blob_path,
+                        })),
+                        cls, blob, blob_path,
+                        is_long_task=False,
+                        callback=partial(cls._async_loading_task_done, f"loadblob_{blob}")
+                    )
+                except Exception as e:
+                    logger.error(f"计算文件MD5时出错: {e}", exc_info=True)
+                    continue
         return True
+
+    @classmethod
+    def _async_loading_task_done(cls, task_id: str, result: any)->None:
+        if not isinstance(result, Exception):
+            with cls._lock:
+                if task_id in cls._task_list:
+                    cls._task_list.remove(task_id)
+
+                if len(cls._task_list) == 0:
+                    cls._isLoading = False
+                    cls.model_data.initialized = True
+        else:
+            logger.error(f"检查备份状态时出错: {task_id}")
+
         

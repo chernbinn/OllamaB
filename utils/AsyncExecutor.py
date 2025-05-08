@@ -155,9 +155,9 @@ class AsyncExecutor:
         pass
 
     @call_once
-    def _init(self, *, max_workers: int = int((os.cpu_count()*2)//3), 
+    def _init(self, *, max_workers: int = int(os.cpu_count()//2), 
                         max_processes: int = 1,
-                        max_queue_size: int = 10, 
+                        max_queue_size: int = 1000, 
                         callback_direct: bool = True):
         if self._initialized:
             return
@@ -639,8 +639,17 @@ class AsyncExecutor:
             return len(self._queued_tasks)
 
     def set_concurrency(self, max_workers: int, max_processes: int):
-        self._thread_pool._max_workers = max_workers
-        self._process_pool._max_workers = max_processes
+        with self._lock:
+            self._thread_pool._max_workers = max_workers
+            self._process_pool._max_workers = max_processes
+            if self._process_pool._max_workers > 1:
+                logger.warning(f"Process pool concurrency is set to {self._process_pool._max_workers}, "
+                              "it is not recommended to set it to a value greater than 1",
+                              "if you must set it to a value greater than 1, don't cancle process task, or it will be killed all processes.")
+    
+    def set_max_queue_size(self, max_queue_size: int):
+        with self._lock:
+            self._max_queue_size = max_queue_size
 
     def shutdown(self) -> None:
         """关闭执行器"""

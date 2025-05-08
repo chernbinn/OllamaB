@@ -3,7 +3,6 @@ from tkinter import ttk, filedialog, messagebox
 import logging
 import os
 import threading
-import traceback
 from ollamab_controller import BackupController
 from models import (
     ModelBackupStatus, 
@@ -56,16 +55,20 @@ class BackupApp:
 
         # 初始化UI组件
         self.create_widgets()
-        #self.configure_style_warm()
         StyleConfigurator.configure_style(self, Theme.WARM)
         
         # 绑定窗口关闭事件
         master.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.master.after(300, self.on_window_ready)  # 0表示尽快执行，但在渲染完成后
+
+    def on_window_ready(self):
         self.async_executor.execute_async("ui_init", self.init, is_long_task=False)
     
     def init(self):
         """ 异步初始化，不可以初始化UI组件。不可以直接刷新UI """
         logger.info("开始初始化...")
+        self.tree_items = {}
+        self.data_lock = threading.Lock()
         self.controller = BackupController(self.model_path, self.backup_path)
         # 初始化数据模型和观察者
         self.model_data = ModelData()
@@ -82,15 +85,15 @@ class BackupApp:
         self.controller.start_async_loading()
 
     def _release(self):
+        self.master.destroy()
         self.uiHandler.running = False
         self.controller.destroy(True)
-        self.master.destroy()
 
     def on_close(self):
         """处理窗口关闭事件，释放资源"""  
         process_count = self.controller.get_backupping_count()
         queue_count = self.controller.get_queued_count()
-        if process_count == 0 and queue_count == 0:
+        if (process_count == 0 and queue_count == 0) or not self.model_data.initialized:
             logger.info("没有正在进行的备份或排队备份，直接关闭应用程序。")
             self._release()
         else:
@@ -253,35 +256,36 @@ class BackupApp:
         for digest in model.blobs:
             self.tree.insert(item, 'end', values=('',), text=os.path.join('blobs', digest),
                             tags=('childrow'))
+        with self.data_lock:
+            self.tree_items[model.name] = item
         self.item_count += 1
 
     def delete_model(self, model: LLMModel)->None:
-        found = False
-        for item in self.tree.get_children():
-            if self.tree.item(item, 'text') == model.name:
-                self.tree.delete(item)
-                found = True
-                break
-        if found:
+        with self.data_lock:
+            item = self.tree_items.pop(model.name, None)
+        if item:
+            self.tree.delete(item)
             self.item_count -= 1
 
     def update_model(self, model: LLMModel)->None:
-        found = False
-        for item in self.tree.get_children():
-            if self.tree.item(item, 'text') == model.name:
+        with self.data_lock:
+            if model.name in self.tree_items:
+                item = self.tree_items[model.name]
                 value = self._get_backup_value(model.bk_status)
                 self.tree.item(item, values=(value,))
-                found = True
-                break
-        if not found:
-            self.add_model(model)
+                return
+        self.add_model(model)
 
     def update_backup_status(self, status: ModelBackupStatus)->None:
-        for item in self.tree.get_children():
-            if self.tree.item(item, 'text') == status.model_name:
-                value = self._get_backup_value(status)
-                self.tree.item(item, values=(value,))
-                break
+        logger.debug(f"更新备份状态: {status.model_name}")  # 调试日志，确保正确获取模型名称
+        with self.data_lock:
+            if not status.model_name in self.tree_items:
+                self.add_model(status.model)
+                return
+        
+            item = self.tree_items[status.model_name]
+        value = self._get_backup_value(status)
+        self.tree.item(item, values=(value,))
 
     def start_backup(self):
         if not self.backup_path_var.get():
