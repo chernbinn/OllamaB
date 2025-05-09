@@ -1,5 +1,5 @@
 import logging
-from typing import List, Dict, Optional, Protocol, runtime_checkable
+from typing import List, Dict, Optional, Protocol, runtime_checkable, Union
 from pydantic import BaseModel
 import copy
 import logging
@@ -18,6 +18,12 @@ class ModelBackupStatus(BaseModel):
     zip_file: str|None = None
     zip_md5: str|None = None
 
+class Blob(BaseModel):
+    name: str
+    size: int
+    md5: str
+    path: str 
+
 class LLMModel(BaseModel):
     model_path: str
     name: str
@@ -27,12 +33,6 @@ class LLMModel(BaseModel):
     manifest: str
     blobs: List[str]
     bk_status: Optional[ModelBackupStatus] = None
-
-class Blobs(BaseModel):
-    name: str
-    size: int
-    md5: str
-    path: str    
 
 class ProcessEvent(Enum):
     WINDOW_INFO = 1
@@ -61,10 +61,10 @@ def call_once(func):
 
 @runtime_checkable
 class ModelObserver(Protocol):
-    def notify_add_model(self, model: LLMModel) -> None: ...
+    def notify_set_model(self, model: LLMModel) -> None: ...
     def notify_delete_model(self, model: LLMModel) -> None: ...
-    def notify_update_model(self, model: LLMModel) -> None: ...
-    def notify_update_backup_status(self, status: ModelBackupStatus) -> None:...
+    def notify_set_blob(self, blob: Blob) -> None:...
+    def notify_set_backup_status(self, status: ModelBackupStatus) -> None:...
     def notify_initialized(self, initialized: bool) -> None: ...
     def notify_process_status(self, status: ProcessStatus) -> None:...
 
@@ -95,7 +95,7 @@ class ModelData:
         """ 只可以被__new__调用一次，用于初始化单例模式下的属性，可以根据需求添加客制化参数 """
         self._models: Dict = {}
         self._observers: List[ModelObserver] = []
-        self._blobs: Dict[str, Blobs] = {}                
+        self._blobs: Dict[str, Blob] = {}                
         self._initialized: bool = False
         self._process_event: ProcessEvent = ProcessStatus(event=None, message="就绪")
 
@@ -132,20 +132,15 @@ class ModelData:
             except Exception as e:
                 logger.error(f"通知观察者时出错: {e}")
 
-    def add_model(self, model: LLMModel) -> None:
+    def set_model(self, model: LLMModel) -> None:
         logger.debug(f"添加模型: {model.name}")
         """添加模型并通知观察者"""
         with self._lock:  # 获取锁
-            new = True
             if model.name in self._models:
-                bk_status = self._models[model.name].bk_status
+                bk_status = self._models[model.name].bk_status if model.bk_status is None else model.bk_status
                 model.bk_status = bk_status
-                new = False
             self._models[model.name] = model
-        if new:
-            self._notify_observers("notify_add_model", copy.deepcopy(model))
-        else:
-            self._notify_observers("notify_update_model", copy.deepcopy(model))
+        self._notify_observers("notify_set_model", copy.deepcopy(model))
 
     def delete_model(self, model: LLMModel) -> None:
         """删除模型并通知观察者"""
@@ -154,16 +149,7 @@ class ModelData:
                 logger.warning(f"尝试删除不存在的模型: {model.name}")
         self._notify_observers("notify_delete_model", model)
 
-    def update_model(self, model: LLMModel) -> None:
-        """更新模型并通知观察者"""
-        with self._lock:
-            if model.name in self._models:
-                bk_status = self._models[model.name].bk_status
-                model.bk_status = bk_status
-            self._models[model.name] = model
-        self._notify_observers("notify_update_model", copy.deepcopy(model))
-
-    def update_backup_status(self, status: ModelBackupStatus) -> None:
+    def set_backup_status(self, status: ModelBackupStatus) -> None:
         """更新备份状态并通知观察者"""
         logger.debug(f"更新备份状态: {status}")  # 调试日志，确保正确更新备份状态
         model_name = status.model_name
@@ -172,8 +158,9 @@ class ModelData:
             zip_md5 = zip_file.split('_')[-1].split('.')[0]
             status.zip_md5 = zip_md5
         with self._lock:
+            exist = True
             if model_name not in self._models:
-                self.models[model_name] = LLMModel(
+                model = LLMModel(
                     model_path=None,
                     name=model_name,
                     description="",
@@ -183,8 +170,13 @@ class ModelData:
                     blobs=[],
                     bk_status=status
                 )
+                exist = False
+                self._models[model_name] = model
             self._models[model_name].bk_status = status
-        self._notify_observers("notify_update_backup_status", copy.deepcopy(status))
+        if exist:
+            self._notify_observers("notify_set_backup_status", copy.deepcopy(status))
+        else:
+            self._notify_observers("notify_set_model", copy.deepcopy(model))
 
     def get_backup_status(self, model_name: str) -> Optional[str]:
         """获取模型备份状态"""
@@ -240,14 +232,60 @@ class ModelData:
         self._notify_observers("notify_process_status", value)
     
     @property
-    def blobs(self) -> Dict[str, Blobs]:
+    def blobs(self) -> Dict[str, Blob]:
         with self._lock:
             return copy.deepcopy(self._blobs)
-    def add_blob(self, blob: Blobs) -> None:
+    def set_blob(self, blob: Blob) -> None:
         """添加 Blob 信息"""
         with self._lock:
             self._blobs[blob.name] = blob
-    def get_blob(self, name: str) -> Optional[Blobs]:
+        self._notify_observers("notify_set_blob", copy.deepcopy(blob))
+    def get_blob(self, name: str) -> Optional[Blob]:
         """获取 Blob 信息"""
         with self._lock:
-            return self._blobs.get(name, None)
+            return copy.deepcopy(self._blobs.get(name, None))
+    def get_blob_size(self, name: str, b_human: bool=False) -> str|int:
+        """获取 Blob 大小"""
+        blob = self.get_blob(name)
+        if not blob:
+            return 0 if not b_human else "0B"
+        if b_human:
+            return self._human_readable_size(blob.size) if blob else ""
+        return blob.size
+
+    @staticmethod
+    def _human_readable_size(size_bytes: Union[int, float]) -> str:
+        """将字节大小转换为带单位的可读字符串    
+        Args:
+            size_bytes: 字节大小        
+        Returns:
+            格式化后的字符串，自动选择最佳单位
+        """
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if abs(size_bytes) < 1024.0:
+                return f"{size_bytes:.2f} {unit}" if unit != 'B' else f"{int(size_bytes)} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.2f} PB"
+    
+    @staticmethod
+    def _humansize_to_bytes(size_str: str) -> int:
+        """将带单位的字符串转换为字节大小
+        Args:
+            size_str: 带单位的字符串，如 '10MB', '2GB'
+        Returns:
+            字节大小
+        Raises:
+            ValueError: 如果字符串格式不正确
+        """
+        size_str = size_str.upper()
+        logger.debug(f"输入字符串: {size_str}")
+        units = {'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4, 'B': 1}
+        try:
+            for unit in units:
+                #logger.debug(f"检查单位: {unit}")
+                if size_str.endswith(unit):
+                    return int(float(size_str[:-len(unit)].strip()) * units[unit])
+            return int(size_str)  # 如果没有单位，直接返回整数大小
+        except Exception as e:
+            logger.error(f"无法解析大小字符串: {size_str}, exception: {e}", exc_info=True)
+            return 0

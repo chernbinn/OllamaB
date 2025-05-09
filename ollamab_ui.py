@@ -3,6 +3,7 @@ from tkinter import ttk, filedialog, messagebox
 import logging
 import os
 import threading
+from typing import override
 from ollamab_controller import BackupController
 from models import (
     ModelBackupStatus, 
@@ -10,17 +11,21 @@ from models import (
     ModelObserver,
     LLMModel,
     ProcessStatus,
-    ProcessEvent
+    ProcessEvent,
+    Blob
 )
 from theme import Theme, StyleConfigurator
 import queue
 from threading import Thread
 from pathlib import Path
-from utils.logging_config import setup_logging
-from utils.AsyncExecutor import AsyncExecutor
+from utils import (
+    logging_config,
+    AsyncExecutor,
+    MultiKeyDict,
+)
 
 # 初始化日志配置
-logger = setup_logging(log_level=logging.INFO)
+logger = logging_config.setup_logging(log_level=logging.DEBUG, b_log_file=False)
 
 from ctypes import windll
 windll.shcore.SetProcessDpiAwareness(1)  # 解决高DPI缩放问题
@@ -67,7 +72,7 @@ class BackupApp:
     def init(self):
         """ 异步初始化，不可以初始化UI组件。不可以直接刷新UI """
         logger.info("开始初始化...")
-        self.tree_items = {}
+        self.tree_items: MultiKeyDict = MultiKeyDict()
         self.data_lock = threading.Lock()
         self.controller = BackupController(self.model_path, self.backup_path)
         # 初始化数据模型和观察者
@@ -148,7 +153,7 @@ class BackupApp:
                 textvariable=self.backup_path_var,
                 style='TEntry').pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0,5))
 
-        self.backup_btn = ttk.Button(backup_path_frame, 
+        self.backup_btn = ttk.Button(backup_path_frame,
                                 text="开始备份", 
                                 command=self.start_backup,
                                 style='Accent.TButton')
@@ -163,15 +168,19 @@ class BackupApp:
 
         # 模型树形面板
         tree_frame = ttk.Frame(info_panel)
-        self.tree = ttk.Treeview(tree_frame, columns=('selected', '_padding'), show='tree headings', 
-                                selectmode='extended', style="Treeview")
+        self.tree = ttk.Treeview(tree_frame, 
+                    columns=('size', 'selected', '_padding'), 
+                    show='tree headings', 
+                    selectmode='extended', style="Treeview")
         # 隐藏多余的列（避免显示填充列）
-        self.tree['displaycolumns'] = ('selected',)
+        self.tree['displaycolumns'] = ('size','selected',)
 
         self.tree.heading('#0', text='模型名称', anchor=tk.W)
         self.tree.column('#0', width=670, anchor=tk.W, stretch=True)
+        self.tree.heading('size', text='占用空间', anchor=tk.E)
+        self.tree.column('size', width=100, anchor=tk.E, stretch=True)
         self.tree.heading('selected', text='备份', anchor=tk.E)
-        self.tree.column('selected', width=80, anchor=tk.E, stretch=False)
+        self.tree.column('selected', width=120, anchor=tk.E, stretch=False)
 
         # 添加填充列配置（确保右对齐列能固定在右侧）
         self.tree.column('_padding', width=0, stretch=True, minwidth=0)
@@ -191,40 +200,58 @@ class BackupApp:
         self.status_var = tk.StringVar(value="加载中")
         #self.status_var.trace_add('write', lambda *_: self._update_status_bar())
         self.status_bar = ttk.Label(main_frame, textvariable=self.status_var, anchor=tk.W, style='TLabel')
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)        
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
     def toggle_checkbox(self, event:any)->None:
         # 获取点击位置的列ID
         region = self.tree.identify("region", event.x, event.y)
-        column = self.tree.identify_column(event.x)
+        column_id = self.tree.identify_column(event.x)
+        column = self._tree_column_name(column_id)
 
-        #logger.debug(f"点击位置: {region}, 列: {column}")  # 调试日志，确保正确获取点击位置和列ID
+        logger.debug(f"点击位置: {region}, 列: {column_id} {column}")  # 调试日志，确保正确获取点击位置和列ID
         
         # 仅在第一列（复选框列）响应点击
-        if region == 'cell' and column == '#1':
-            item = self.tree.identify_row(event.y)
-            current = self.tree.item(item, 'values')
-            logger.debug(f"当前状态: {current}")  # 调试日志，确保正确获取当前状态
-            new_state = self.CHECKED_SYMBOL if current[0] == self.UNCHECKED_SYMBOL else self.UNCHECKED_SYMBOL
+        if region == 'cell' and column == 'selected':
+            item = self.tree.identify_row(event.y)    
+            old_state = self.tree.set(item, 'selected')
+            logger.debug(f"当前状态: {old_state}")  # 调试日志，确保正确获取当前状态
+            new_state = self.CHECKED_SYMBOL if old_state == self.UNCHECKED_SYMBOL else self.UNCHECKED_SYMBOL
 
             if any([
-                current[0] == self.BACKUPED_ERROR_SYMBOL,
-                current[0] == self.BACKUPED_SYMBOL,
-                current[0] == self.CHECKING_SYMBOL,
+                old_state == self.BACKUPED_ERROR_SYMBOL,
+                old_state == self.BACKUPED_SYMBOL,
+                old_state == self.CHECKING_SYMBOL,
             ]):
                 return
 
             model_name = self.tree.item(item, 'text')
             if any([
-                current[0] == self.BACKUPING_SYMBOL,
-                current[0] == self.CHECKED_SYMBOL,
+                old_state == self.BACKUPING_SYMBOL,
+                old_state == self.CHECKED_SYMBOL,
             ]):
                 new_state = self.UNCHECKED_SYMBOL
-                if not self.cancle_backup(model_name, current[0]):
+                if not self.cancle_backup(model_name, old_state):
                     return
 
-            self.tree.item(item, values=(new_state,))            
+            self.tree.set(item, 'selected', value=new_state)            
             logger.debug(f"复选框状态更新：{model_name} -> {new_state}")
+    
+    def _tree_column_name(self, column_id:str)->str:
+        display_columns = self.tree['displaycolumns']
+        columns = self.tree['columns']
+        try:
+            if display_columns and display_columns[0] != '#0':
+                # 如果有自定义显示的列
+                col_index = int(column_id[1:]) - 1  # '#1' -> 0
+                column_name = display_columns[col_index]  if col_index > 0 else '#0'
+            else:
+                # 标准列顺序
+                col_index = int(column_id[1:])  # '#1' -> 1
+                column_name = columns[col_index]
+        except (IndexError, ValueError) as e:
+            logger.error(f"无效的列ID: {column_id}, exception: {e}", exc_info=True)  # 错误日志，确保正确处理无效的列ID
+            return None
+        return column_name
     
     def _get_backup_value(self, status: ModelBackupStatus)->str:
         if not status:
@@ -245,47 +272,151 @@ class BackupApp:
         else:
             return self.UNCHECKED_SYMBOL
 
-    def add_model(self, model: LLMModel)->None:
-        logger.debug(f"添加模型: {model.name}")  # 调试日志，确保正确获取模型名称
-        value = self.CHECKING_SYMBOL
-        item = self.tree.insert('', 'end', text=model.name, values=(value,),
-                        tags=('oddrow' if (self.item_count % 2) == 0 else 'evenrow'))
-        self.tree.insert(item, 'end', values=('',), 
-                        text=model.manifest,
-                        tags=('childrow'))
-        for digest in model.blobs:
-            self.tree.insert(item, 'end', values=('',), text=os.path.join('blobs', digest),
-                            tags=('childrow'))
+    def _add_model(self, model: LLMModel)->None:        
         with self.data_lock:
+            logger.debug(f"添加模型: {model.name}")  # 调试日志，确保正确获取模型名称
+            value = self.CHECKING_SYMBOL if not model.bk_status else self._get_backup_value(model.bk_status)
+            item = self.tree.insert('', 'end', text=model.name, values=("", value,),
+                            tags=('oddrow' if (self.item_count % 2) == 0 else 'evenrow'))
+            
+            manifest_size = os.path.getsize(os.path.join(model.model_path, model.manifest))
+            humansize = self.model_data._human_readable_size(manifest_size)
+            manifest_item = self.tree.insert(item, 'end', values=(humansize, '',), 
+                            text=model.manifest,
+                            tags=('childrow'))
+            blobs_size = 0
+            for digest in model.blobs:
+                blobs_size += self.model_data.get_blob_size(digest)
+                humansize = self.model_data.get_blob_size(digest, True)
+                blob_item = self.tree.insert(item, 'end', values=(humansize, '',), text=os.path.join('blobs', digest),
+                                tags=('childrow'))
+                
+                self.tree_items[digest] = blob_item
+            
+            model_size = blobs_size + manifest_size
+            humansize = self.model_data._human_readable_size(model_size)
+            #self.tree.item(item, values=(humansize, value,)) # 更新两列值
+            self.tree.set(item, column='size', value=humansize) # 只更新size列的值
             self.tree_items[model.name] = item
-        self.item_count += 1
+            self.tree_items[model.manifest] = manifest_item
+            self.item_count += 1
 
     def delete_model(self, model: LLMModel)->None:
+        logger.debug(f"删除模型: {model.name}")  # 调试日志，确保正确获取模型名称
         with self.data_lock:
             item = self.tree_items.pop(model.name, None)
-        if item:
-            self.tree.delete(item)
-            self.item_count -= 1
+            if item:
+                self.tree.delete(item)
+                self.item_count -= 1
 
-    def update_model(self, model: LLMModel)->None:
+    def _update_model(self, model: LLMModel)->None:
+        logger.debug(f"更新模型: {model.name}")  # 调试日志，确保正确获取模型名称
         with self.data_lock:
-            if model.name in self.tree_items:
-                item = self.tree_items[model.name]
-                value = self._get_backup_value(model.bk_status)
-                self.tree.item(item, values=(value,))
+            item = self.tree_items.get(model.name, None)
+            if not item:
+                logger.warning(f"模型 {model.name} 不存在，无法更新")  # 警告日志，确保正确获取模型名称
                 return
-        self.add_model(model)
+            # 获取主项目ID
+            item = self.tree_items[model.name]
+            
+            # 更新备份状态
+            backup_value = self.CHECKING_SYMBOL if not model.bk_status else self._get_backup_value(model.bk_status)
+            self.tree.set(item, column='selected', value=backup_value)
+            
+            # 计算并更新总大小
+            manifest_path = os.path.join(model.model_path, model.manifest)
+            manifest_size = os.path.getsize(manifest_path) if os.path.exists(manifest_path) else 0
+            blobs_size = sum(self.model_data.get_blob_size(digest) or 0 for digest in model.blobs)
+            model_size = manifest_size + blobs_size
+            
+            self.tree.set(item, column='size', value=self.model_data._human_readable_size(model_size))
+            
+            # 更新manifest子项（如果manifest变化）
+            if model.manifest in self.tree_items:
+                manifest_item = self.tree_items[model.manifest]
+                self.tree.set(manifest_item, column='size', 
+                            value=self.model_data._human_readable_size(manifest_size))
+            
+            # 更新blob子项
+            existing_blobs = set()
+            for child in self.tree.get_children(item):
+                item_text = self.tree.item(child, 'text')
+                if item_text.startswith('blobs'):
+                    digest = os.path.basename(item_text)
+                    existing_blobs.add(digest)
+                    
+                    # 更新已有blob大小
+                    if digest in model.blobs:
+                        blob_size = self.model_data.get_blob_size(digest) or 0
+                        self.tree.set(child, column='size',
+                                    value=self.model_data._human_readable_size(blob_size))
+            
+            # 添加新增的blob
+            for digest in model.blobs:
+                if digest not in existing_blobs:
+                    blob_size = self.model_data.get_blob_size(digest) or 0
+                    humansize = self.model_data._human_readable_size(blob_size)
+                    blob_item = self.tree.insert(
+                        item, 'end',
+                        text=os.path.join('blobs', digest),
+                        values=(humansize, "", ""),
+                        tags=('childrow')
+                    )
+                    self.tree_items[digest] = blob_item
+            
+            # 删除不存在的blob
+            for digest in existing_blobs - set(model.blobs):
+                if digest in self.tree_items:
+                    self.tree.delete(self.tree_items[digest])
+                    del self.tree_items[digest]            
 
-    def update_backup_status(self, status: ModelBackupStatus)->None:
+    def set_model(self, model: LLMModel)->None:
+        with self.data_lock:
+            exist = (model.name in self.tree_items)
+        if exist:
+            self._update_model(model)
+        else:
+            self._add_model(model)
+    
+    def set_blob(self, blob: Blob)->None:
+        logger.debug(f"更新blob: {blob.name}")  # 调试日志，确保正确获取模型名称
+        with self.data_lock:
+            if not blob.name in self.tree_items:
+                return
+            exist_parent = False
+            for item in self.tree_items.get_all(blob.name):
+                humansize = self.model_data._human_readable_size(blob.size)
+                self.tree.set(item, column='size', value=humansize)
+                parent_item = self.tree.parent(item)
+                parent_item_name = self.tree.item(parent_item, 'text')
+                if parent_item_name in self.tree_items:
+                    exist_parent = True
+                    parent_humansize = self.tree.set(parent_item, column='size')
+                    logger.debug(f"{blob.name[:15]}--parent_humansize: {parent_humansize}")
+                    parent_size = self.model_data._humansize_to_bytes(parent_humansize)
+                    logger.debug(f"{blob.name[:15]}--parent_size: {parent_size}")
+                    logger.debug(f"{blob.name[:15]}--blob.size: {blob.size}")
+                    humansize = self.model_data._human_readable_size(parent_size+blob.size)
+                    logger.debug(f"{blob.name[:15]}--humansize: {humansize}")
+                    self.tree.set(parent_item, column='size', value=humansize)
+
+            if not exist_parent:
+                humansize = self.model_data._human_readable_size(blob.size)
+                self.item_count += 1
+                item = self.tree.insert('', 'end', text=os.path.join('blobs', blob.name), values=(humansize, "", ""),
+                                tags=('oddrow' if (self.item_count % 2)==0 else 'evenrow'))
+                self.tree_items[blob.name] = item
+
+    def set_backup_status(self, status: ModelBackupStatus)->None:
         logger.debug(f"更新备份状态: {status.model_name}")  # 调试日志，确保正确获取模型名称
         with self.data_lock:
             if not status.model_name in self.tree_items:
-                self.add_model(status.model)
+                logger.warning(f"模型 {status.model_name} 不存在，无法更新备份状态")  # 警告日志，确保正确获取模型名称
                 return
         
             item = self.tree_items[status.model_name]
-        value = self._get_backup_value(status)
-        self.tree.item(item, values=(value,))
+            backuped_value = self._get_backup_value(status)
+            self.tree.set(item, 'selected', value=backuped_value)
 
     def start_backup(self):
         if not self.backup_path_var.get():
@@ -296,7 +427,7 @@ class BackupApp:
         selected_models = [
             self.tree.item(item, 'text')
             for item in self.tree.get_children()
-            if self.tree.item(item, 'values')[0] == self.CHECKED_SYMBOL
+            if self.tree.set(item, 'selected') == self.CHECKED_SYMBOL
         ]
         logger.debug(f"选中的模型: {selected_models}")  # 调试日志，确保正确获取选中的模型
 
@@ -308,6 +439,8 @@ class BackupApp:
         # threading.Thread(target=self.run_backup, args=(selected_models,)).start()
     
     def cancle_backup(self, model_name: str, status: str)->bool:
+        if not self.controller.is_backupping(model_name):
+            return True
         if status == self.BACKUPING_SYMBOL:
             msg_info = "正在备份中，确定取消备份吗？"
         else:
@@ -406,25 +539,25 @@ class UIUpdateHandler:
                 if callable(method):
                     method(payload)
             except AttributeError:
-                logger.error(f"无效的UI方法: {action}")
+                logger.error(f"无效的UI方法: {action}", exc_info=True)
             except (queue.Empty, ValueError):
                 continue
             except Exception as e:
-                logger.error(f"执行 {action} 失败: {e}")
+                logger.error(f"执行 {action} 失败: {e}", exc_info=True)
     
 class Obeserver(ModelObserver):
     def __init__(self, handler: UIUpdateHandler):
         self.handler = handler
-    def notify_add_model(self, model: LLMModel) -> None:
+    def notify_set_model(self, model: LLMModel) -> None:
         logger.debug(f"通知添加模型: {model}")
-        self.handler.queue.put(("add_model", model))
+        self.handler.queue.put(("set_model", model))
     def notify_delete_model(self, model: LLMModel) -> None:
         self.handler.queue.put(("delete_model", model))
-    def notify_update_model(self, model: LLMModel) -> None:
-        self.handler.queue.put(("update_model", model))
-    def notify_update_backup_status(self, status: ModelBackupStatus) -> None:
+    def notify_set_blob(self, blob: Blob) -> None:
+        self.handler.queue.put(("set_blob", blob))
+    def notify_set_backup_status(self, status: ModelBackupStatus) -> None:
         logger.debug(f"通知更新备份状态: {status}")
-        self.handler.queue.put(("update_backup_status", status))
+        self.handler.queue.put(("set_backup_status", status))
     def notify_initialized(self, initialized: bool) -> None:
         self.handler.queue.put(("set_initialized", initialized))
     def notify_loading_progress(self, progress_status: ProcessStatus) -> None:

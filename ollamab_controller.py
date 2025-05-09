@@ -12,7 +12,7 @@ from ollamab import (
 )
 import os
 import threading
-from models import ModelData, LLMModel, ModelBackupStatus, Blobs
+from models import ModelData, LLMModel, ModelBackupStatus, Blob
 from queue import Queue, Empty
 from pydantic import BaseModel
 from utils.logging_config import setup_logging
@@ -65,7 +65,7 @@ class BackupController:
     def _process_async_task_status(self, task_id: str) -> None:
         """处理异步任务状态"""
         if task_id.startswith("backup_"):
-            self.model_data.update_backup_status(ModelBackupStatus(
+            self.model_data.set_backup_status(ModelBackupStatus(
                 model_name=task_id,
                 backup_path=self.backup_path,
                 backup_status=True,
@@ -76,7 +76,7 @@ class BackupController:
         """备份完成回调"""
         if isinstance(result, str) and os.path.exists(result):
             logger.info(f"{model_name}备份完成: {result}")
-            self.model_data.update_backup_status(ModelBackupStatus(
+            self.model_data.set_backup_status(ModelBackupStatus(
                 model_name=model_name,
                 backup_path=self.backup_path,
                 backup_status=True,
@@ -89,7 +89,7 @@ class BackupController:
         else:
             logger.error(f"备份失败: {model_name}")
             clean_temp_files(self.model_path, self.model_path)
-            self.model_data.update_backup_status(ModelBackupStatus(
+            self.model_data.set_backup_status(ModelBackupStatus(
                 model_name=model_name,
                 backup_path=self.backup_path,
                 backup_status=False,
@@ -138,7 +138,7 @@ class BackupController:
                     logger.error(f"提交异步备份模型失败: {model}")
                     continue
                 if not self.asyncExcutor.is_queued(model):
-                    self.model_data.update_backup_status(ModelBackupStatus(
+                    self.model_data.set_backup_status(ModelBackupStatus(
                         model_name=model,
                         backup_path=self.backup_path,
                         backup_status=True,
@@ -190,6 +190,12 @@ class BackupController:
     
     def get_backupping_count(self):
         return self.asyncExcutor.get_running_process_count()
+
+    def is_backupping(self, model_name: str) -> bool:
+        """检查模型是否正在备份"""
+        return all([self.asyncExcutor.is_task_active(f"backup_{model_name}"),
+                    not self.asyncExcutor.is_queued(f"backup_{model_name}")
+        ])
     
     def get_queued_count(self):
         return self.asyncExcutor.get_queued_task_count()
@@ -354,7 +360,7 @@ class AsyncLoad:
                     dest_path = os.path.join(cls.backup_path, zip_name)
                     """
                     backuped, zip_file = check_zip_file_integrity(dest_path)
-                    cls.model_data.update_backup_status(ModelBackupStatus(**{
+                    cls.model_data.set_backup_status(ModelBackupStatus(**{
                         'model_name': model_name,
                         'backup_path': os.path.dirname(zip_file) if zip_file else None,
                         'backup_status': backuped,
@@ -416,7 +422,7 @@ class AsyncLoad:
             dest_path = os.path.join(backup_dir, backup_file)
 
         backupde, zip_file = check_zip_file_integrity(dest_path)
-        cls.model_data.update_backup_status(ModelBackupStatus(
+        cls.model_data.set_backup_status(ModelBackupStatus(
             model_name=model_name,
             backup_path=cls.backup_path,
             backup_status=backupde,
@@ -438,7 +444,7 @@ class AsyncLoad:
             logger.debug(f"模型信息: {model_file}")
             model_dict = cls.get_model_detail_file(f"{llm}:{version}", model_file)
             
-            cls.model_data.add_model(LLMModel(**{
+            cls.model_data.set_model(LLMModel(**{
                 'model_path': cls.model_path,
                 'name': f"{llm}:{version}",
                 'description': f"{llm}:{version}",
@@ -475,7 +481,7 @@ class AsyncLoad:
                         cls._task_list.append(f"loadblob_{blob}")
                     cls.async_executor.execute_async(
                         f"loadblob_{blob}",
-                        lambda cls_ref, blob, blob_path: cls_ref.model_data.add_blob(Blobs(**{
+                        lambda cls_ref, blob, blob_path: cls_ref.model_data.set_blob(Blob(**{
                             'name': blob,
                             'size': os.path.getsize(blob_path),
                             'md5': hashlib.md5(open(blob_path, 'rb').read()).hexdigest(),
