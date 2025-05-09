@@ -1,7 +1,7 @@
 import logging
 from typing import List, Dict, Optional, Protocol, runtime_checkable, Union
 from pydantic import BaseModel
-import copy
+import copy, os
 import logging
 from utils.logging_config import setup_logging
 from threading import Lock
@@ -17,6 +17,7 @@ class ModelBackupStatus(BaseModel):
     backup_status: bool
     zip_file: str|None = None
     zip_md5: str|None = None
+    size: int|None = None
 
 class Blob(BaseModel):
     name: str
@@ -25,13 +26,13 @@ class Blob(BaseModel):
     path: str 
 
 class LLMModel(BaseModel):
-    model_path: str
+    model_path: str|None = None
     name: str
     description: str    
     llm: str
     version: str
-    manifest: str
-    blobs: List[str]
+    manifest: str|None = None
+    blobs: List[str]|None = None
     bk_status: Optional[ModelBackupStatus] = None
 
 class ProcessEvent(Enum):
@@ -153,21 +154,22 @@ class ModelData:
         """更新备份状态并通知观察者"""
         logger.debug(f"更新备份状态: {status}")  # 调试日志，确保正确更新备份状态
         model_name = status.model_name
-        if status.backup_status and status.zip_file:
+        if status.backup_status and status.zip_file and os.path.exists(status.zip_file):
             zip_file = status.zip_file
             zip_md5 = zip_file.split('_')[-1].split('.')[0]
             status.zip_md5 = zip_md5
+            status.size = os.path.getsize(zip_file)
         with self._lock:
             exist = True
             if model_name not in self._models:
                 model = LLMModel(
                     model_path=None,
                     name=model_name,
-                    description="",
-                    llm="",
-                    version="",
-                    manifest="",
-                    blobs=[],
+                    description=model_name,
+                    llm=model_name.split(':')[0] if ':' in model_name else model_name,
+                    version=model_name.split(':')[-1] if ':' in model_name else 'latest',
+                    manifest=None,
+                    blobs=None,
                     bk_status=status
                 )
                 exist = False
@@ -186,6 +188,15 @@ class ModelData:
             except Exception as e:
                 logger.error(f"获取备份状态时出错: {e}", exc_info=True)
                 return None
+                
+    def exist_model_backup(self, model_name: str) -> bool:
+        """检查模型是否存在备份"""
+        with self._lock:
+            try:
+                return self._models.get(model_name, {}).get("bk_status", None) is not None
+            except Exception as e:
+                logger.error(f"检查备份状态时出错: {e}", exc_info=True)
+                return False
 
     @property
     def models(self) -> List[LLMModel]:

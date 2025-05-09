@@ -44,6 +44,7 @@ class BackupApp:
         self.BACKUPED_ERROR_SYMBOL = '[备份异常]'
         self.BACKUPED_FAILED_SYMBOL = '[备份失败]'
         self.BACKUPING_SYMBOL = '[备份中]'
+        self.BACKUP_QUEUED = '[排队中]'
 
         self.default_backup_path = r"F:\llm_models\ollama_modes_backup"
         self.default_model_path = r"F:\llm_models\ollama_modes"
@@ -178,7 +179,7 @@ class BackupApp:
         self.tree.heading('#0', text='模型名称', anchor=tk.W)
         self.tree.column('#0', width=670, anchor=tk.W, stretch=True)
         self.tree.heading('size', text='占用空间', anchor=tk.E)
-        self.tree.column('size', width=100, anchor=tk.E, stretch=True)
+        self.tree.column('size', width=100, anchor=tk.E, stretch=False)
         self.tree.heading('selected', text='备份', anchor=tk.E)
         self.tree.column('selected', width=120, anchor=tk.E, stretch=False)
 
@@ -208,7 +209,10 @@ class BackupApp:
         column_id = self.tree.identify_column(event.x)
         column = self._tree_column_name(column_id)
 
-        logger.debug(f"点击位置: {region}, 列: {column_id} {column}")  # 调试日志，确保正确获取点击位置和列ID
+        if not column_id or not column:
+            return None
+
+        #logger.debug(f"点击位置: {region}, 列: {column_id} {column}")  # 调试日志，确保正确获取点击位置和列ID
         
         # 仅在第一列（复选框列）响应点击
         if region == 'cell' and column == 'selected':
@@ -228,6 +232,7 @@ class BackupApp:
             if any([
                 old_state == self.BACKUPING_SYMBOL,
                 old_state == self.CHECKED_SYMBOL,
+                old_state == self.BACKUP_QUEUED
             ]):
                 new_state = self.UNCHECKED_SYMBOL
                 if not self.cancle_backup(model_name, old_state):
@@ -239,6 +244,8 @@ class BackupApp:
     def _tree_column_name(self, column_id:str)->str:
         display_columns = self.tree['displaycolumns']
         columns = self.tree['columns']
+        if not column_id:
+            return None
         try:
             if display_columns and display_columns[0] != '#0':
                 # 如果有自定义显示的列
@@ -260,10 +267,13 @@ class BackupApp:
         backuped = status.backup_status
         zip_file = status.zip_file
         if backuped:
-            if zip_file:
+            if zip_file and status.zip_md5:
                 return self.BACKUPED_SYMBOL
-            else:
+            if zip_file and not status.zip_md5:
+                return self.CHECKING_SYMBOL
+            if status.backup_path and not zip_file:
                 return self.BACKUPING_SYMBOL
+            return self.BACKUP_QUEUED
         elif zip_file:
             if status.zip_md5:
                 return self.BACKUPED_ERROR_SYMBOL                
@@ -278,28 +288,32 @@ class BackupApp:
             value = self.CHECKING_SYMBOL if not model.bk_status else self._get_backup_value(model.bk_status)
             item = self.tree.insert('', 'end', text=model.name, values=("", value,),
                             tags=('oddrow' if (self.item_count % 2) == 0 else 'evenrow'))
-            
-            manifest_size = os.path.getsize(os.path.join(model.model_path, model.manifest))
-            humansize = self.model_data._human_readable_size(manifest_size)
-            manifest_item = self.tree.insert(item, 'end', values=(humansize, '',), 
-                            text=model.manifest,
-                            tags=('childrow'))
-            blobs_size = 0
-            for digest in model.blobs:
-                blobs_size += self.model_data.get_blob_size(digest)
-                humansize = self.model_data.get_blob_size(digest, True)
-                blob_item = self.tree.insert(item, 'end', values=(humansize, '',), text=os.path.join('blobs', digest),
-                                tags=('childrow'))
-                
-                self.tree_items[digest] = blob_item
-            
-            model_size = blobs_size + manifest_size
-            humansize = self.model_data._human_readable_size(model_size)
-            #self.tree.item(item, values=(humansize, value,)) # 更新两列值
-            self.tree.set(item, column='size', value=humansize) # 只更新size列的值
             self.tree_items[model.name] = item
-            self.tree_items[model.manifest] = manifest_item
             self.item_count += 1
+
+            if model.model_path:
+                manifest_size = os.path.getsize(os.path.join(model.model_path, model.manifest))
+                humansize = self.model_data._human_readable_size(manifest_size)
+                manifest_item = self.tree.insert(item, 'end', values=(humansize, '',), 
+                                text=model.manifest,
+                                tags=('childrow'))
+                self.tree_items[model.manifest] = manifest_item
+
+                blobs_size = 0
+                for digest in model.blobs:
+                    blobs_size += self.model_data.get_blob_size(digest)
+                    humansize = self.model_data.get_blob_size(digest, True)
+                    blob_item = self.tree.insert(item, 'end', values=(humansize, '',), text=os.path.join('blobs', digest),
+                                    tags=('childrow'))
+                    
+                    self.tree_items[digest] = blob_item
+
+                model_size = blobs_size + manifest_size
+                humansize = self.model_data._human_readable_size(model_size)
+                self.tree.set(item, column='size', value=humansize)
+            
+            if model.bk_status and model.bk_status.zip_md5:
+                cls._insert_zipfile(item, model.bk_status)
 
     def delete_model(self, model: LLMModel)->None:
         logger.debug(f"删除模型: {model.name}")  # 调试日志，确保正确获取模型名称
@@ -417,6 +431,28 @@ class BackupApp:
             item = self.tree_items[status.model_name]
             backuped_value = self._get_backup_value(status)
             self.tree.set(item, 'selected', value=backuped_value)
+            if not status.zip_md5:
+                return
+            zipfilename = os.path.basename(status.zip_file)
+            zipfile_item = self.tree_items.get(zipfilename)
+            if not zipfile_item:
+                self._insert_zipfile(item, status)            
+
+    def _insert_zipfile(self, parent, status: ModelBackupStatus)->None:
+        logger.debug(f"插入zipfile: {status.zip_file}")  # 调试日志，确保正确获取模型名称        
+        zipfilename = os.path.basename(status.zip_file)
+        zipfile_item = self.tree.insert(parent, 'end', values=('', '',), text=zipfilename,
+                        tags=('childrow'))
+        self.tree_items[zipfilename] = zipfile_item            
+        self.tree.set(zipfile_item, column='size', value=self.model_data._human_readable_size(status.size))
+        
+        parent_humansize = self.tree.set(parent, column='size')
+        parent_size = 0
+        if parent_humansize:
+            parent_size = self.model_data._humansize_to_bytes(parent_humansize)
+        humansize = self.model_data._human_readable_size(parent_size+status.size)
+        self.tree.set(parent, column='size', value=humansize)
+            
 
     def start_backup(self):
         if not self.backup_path_var.get():

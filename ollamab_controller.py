@@ -34,7 +34,7 @@ class BackupController:
         self.asyncExcutor = AsyncExecutor()
         self.cancle_backup_models = []
 
-        self.asyncExcutor.set_notify_processing(self._process_async_task_status)
+        #self.asyncExcutor.set_notify_processing(self._process_async_task_status)
         self.asyncExcutor.set_concurrency(7, 1)
     
     def chdir_path(self, model_path: str, backup_path: str) -> None:
@@ -91,7 +91,7 @@ class BackupController:
             clean_temp_files(self.model_path, self.model_path)
             self.model_data.set_backup_status(ModelBackupStatus(
                 model_name=model_name,
-                backup_path=self.backup_path,
+                backup_path=None,
                 backup_status=False,
                 zip_file=zip_name,
                 zip_md5=None
@@ -141,6 +141,13 @@ class BackupController:
                     self.model_data.set_backup_status(ModelBackupStatus(
                         model_name=model,
                         backup_path=self.backup_path,
+                        backup_status=True,
+                        zip_file=None
+                    ))
+                else:
+                    self.model_data.set_backup_status(ModelBackupStatus(
+                        model_name=model,
+                        backup_path=None,
                         backup_status=True,
                         zip_file=None
                     ))
@@ -312,7 +319,7 @@ class AsyncLoad:
             is_long_task=False,
             callback=partial(cls._async_loading_task_done, "check_allbackup")
         )
-    
+
     @classmethod
     def _init_models_task(cls, model_queue: Queue):
         #logger.info("第一阶段：开始初始化模型信息")
@@ -328,6 +335,7 @@ class AsyncLoad:
                 for version in os.listdir(llm_path):
                     logger.debug(f"----llm: {llm} version: {version}")
                     cls._iter_model_task(llm, version, model_queue)
+            cls._get_backuped_models(model_queue)
         finally:            
             logger.info("第一阶段：模型信息初始化完成")
             cls._data_stop_event.set()
@@ -339,8 +347,30 @@ class AsyncLoad:
             cls._data_ready_event.set()
             for model in models:
                 model_queue.put([model.name, f"backup_{model.llm}_{model.version}.zip"])
+            cls._get_backuped_models(model_queue)
         finally:
             cls._data_stop_event.set()
+
+    @classmethod
+    def _get_backuped_models(cls, queue: Queue=None)->List[str]:
+        """获取已备份的模型列表"""
+        backuped_models = []
+        for file in os.listdir(cls.backup_path):
+            if file.endswith('.zip'):
+                seps = file.split('_')
+                model_name = f"{seps[1]}:{seps[2]}"
+                zip_name = f"backup_{seps[1]}_{seps[2]}.zip"
+                cls.model_data.set_backup_status(ModelBackupStatus(
+                    model_name=model_name,
+                    backup_path=None,
+                    backup_status=True,
+                    zip_file=zip_name,
+                    zip_md5=None
+                ))
+                if queue:
+                    queue.put([model_name, zip_name])
+                backuped_models.append(model_name)
+        return backuped_models
     
     @classmethod
     def _check_backup_task(cls, model_queue: Queue) -> None:
@@ -348,8 +378,8 @@ class AsyncLoad:
         try:
             logger.info("第二阶段：开始执行备份状态检查")
             # 等待阶段一数据准备就绪或超时
-            if not cls._data_ready_event.wait(timeout=10):
-                logger.warning("等待阶段一数据超时，退出检查任务")
+            if not cls._data_ready_event.wait(timeout=10) and model_queue.empty():
+                logger.warning("等待阶段一数据超时且没有待校验的备份模型，退出检查任务")
                 return
             logger.debug(f"model_queue: {model_queue.qsize()} cls._data_stop_event.is_set(): {cls._data_stop_event.is_set()}")
             while not (cls._data_stop_event.is_set() and model_queue.empty()):
@@ -357,17 +387,7 @@ class AsyncLoad:
                     model_name, zip_name = model_queue.get(block=True, timeout=1)
                     if model_name is None:
                         continue
-                    dest_path = os.path.join(cls.backup_path, zip_name)
-                    """
-                    backuped, zip_file = check_zip_file_integrity(dest_path)
-                    cls.model_data.set_backup_status(ModelBackupStatus(**{
-                        'model_name': model_name,
-                        'backup_path': os.path.dirname(zip_file) if zip_file else None,
-                        'backup_status': backuped,
-                        'zip_file': os.path.basename(zip_file) if zip_file else None,
-                        'zip_md5': None,
-                    }))
-                    """
+                    dest_path = os.path.join(cls.backup_path, zip_name)                    
                     with cls._lock:
                         cls._task_list.append(f"loadcheck_{model_name}")
                         logger.debug(f"loadcheck_{model_name}")
@@ -385,7 +405,7 @@ class AsyncLoad:
                     continue
                 except Exception as e:
                     logger.error(f"检查备份状态时出错: {e}", exc_info=True)
-                    continue
+                    continue            
         finally:
             logger.info("第二阶段：备份状态检查完成")
             """
