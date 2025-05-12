@@ -23,6 +23,9 @@ from utils import (
     AsyncExecutor,
     MultiKeyDict,
 )
+from ui import (
+    ItemTip,
+)
 
 # 初始化日志配置
 logger = logging_config.setup_logging(log_level=logging.DEBUG, b_log_file=False)
@@ -33,8 +36,8 @@ windll.shcore.SetProcessDpiAwareness(1)  # 解决高DPI缩放问题
 class BackupApp:
     def __init__(self, master):
         self.master = master        
-        master.title("Ollama模型备份工具")
-        master.geometry("1200x800")
+        master.title("Ollama模型备份工具")        
+        master.geometry("1200x800")        
 
         # 状态符号配置
         self.CHECKED_SYMBOL = '[Y]'
@@ -73,6 +76,9 @@ class BackupApp:
     def init(self):
         """ 异步初始化，不可以初始化UI组件。不可以直接刷新UI """
         logger.info("开始初始化...")
+        self.current_tooltip = None 
+
+        self.itemtip = ItemTip(self.master)
         self.tree_items: MultiKeyDict = MultiKeyDict()
         self.data_lock = threading.Lock()
         self.controller = BackupController(self.model_path, self.backup_path)
@@ -91,8 +97,8 @@ class BackupApp:
         self.controller.start_async_loading()
 
     def _release(self):
-        self.master.destroy()
         self.uiHandler.running = False
+        self.master.destroy()
         self.controller.destroy(True)
 
     def on_close(self):
@@ -194,6 +200,8 @@ class BackupApp:
 
         # 绑定事件
         self.tree.bind('<Button-1>', self.toggle_checkbox)
+        self.tree.bind('<Motion>', self.on_hover)
+        self.tree.bind('<Leave>', self._hide_tooltip)
         # 添加选中项变更事件
         # self.tree.bind('<<TreeviewOpen>>', self.update_node_status)
 
@@ -202,6 +210,45 @@ class BackupApp:
         #self.status_var.trace_add('write', lambda *_: self._update_status_bar())
         self.status_bar = ttk.Label(main_frame, textvariable=self.status_var, anchor=tk.W, style='TLabel')
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def on_hover(self, event):
+        """处理鼠标悬停事件，显示详情页面"""
+        # 销毁当前详情页面
+        self._hide_tooltip()
+        
+        item = self.tree.identify_row(event.y)
+        if item:
+            model_name = self.tree.item(item, 'text')
+            model = self.model_data.get_model(model_name)
+            if model:                
+                self._show_tooltip(model)
+
+    def _show_tooltip(self, model):
+        """显示模型详情工具提示"""
+        tooltip = tk.Toplevel(self.master)
+        tooltip.wm_overrideredirect(True)
+        tooltip.wm_geometry(f"+{self.master.winfo_pointerx()+10}+{self.master.winfo_pointery()+10}")
+
+        content = f"模型名称: {model.name}\n"
+        content += f"描述: {model.description}\n"
+        content += f"版本: {model.version}\n"
+        content += f"LLM: {model.llm}\n"
+
+        label = ttk.Label(tooltip, text=content, background='#FFFFE0', relief='solid', borderwidth=1)
+        label.pack(ipadx=5, ipady=5)
+
+        # 绑定鼠标离开事件（包括树控件和工具提示本身）        
+        tooltip.bind('<Leave>', self._hide_tooltip)
+        self.current_tooltip = tooltip
+
+    def _hide_tooltip(self, event=None):
+        """隐藏工具提示"""
+        if hasattr(self, 'current_tooltip') and self.current_tooltip:
+            self.current_tooltip.destroy()
+            del self.current_tooltip
+            self.current_tooltip = None
+        # 解绑事件处理器
+        #self.tree.unbind('<Leave>', self._hide_tooltip)
 
     def toggle_checkbox(self, event:any)->None:
         # 获取点击位置的列ID
@@ -282,7 +329,7 @@ class BackupApp:
         else:
             return self.UNCHECKED_SYMBOL
 
-    def _add_model(self, model: LLMModel)->None:        
+    def _add_model(self, model: LLMModel)->None:
         with self.data_lock:
             logger.debug(f"添加模型: {model.name}")  # 调试日志，确保正确获取模型名称
             value = self.CHECKING_SYMBOL if not model.bk_status else self._get_backup_value(model.bk_status)
