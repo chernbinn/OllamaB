@@ -211,10 +211,14 @@ class BackupApp:
 
     def on_hover(self, event):
         """处理鼠标悬停事件，显示详情页面"""
+        logger.debug(f"on_hover: {event}")  # 调试日志，确保正确获取点击位置和列ID
         item = self.tree.identify_row(event.y)
+        logger.debug(f"on_hover: {item}")  # 调试日志，确保正确获取点击位置和列ID
         if item:
             item_name = self.tree.item(item, 'text')
             self.itemtip.show(item_name)
+        else:
+            self.itemtip.hide()
 
     def toggle_checkbox(self, event:any)->None:
         # 获取点击位置的列ID
@@ -225,7 +229,7 @@ class BackupApp:
         if not column_id or not column:
             return None
 
-        #logger.debug(f"点击位置: {region}, 列: {column_id} {column}")  # 调试日志，确保正确获取点击位置和列ID
+        logger.debug(f"点击位置: {region}, 列: {column_id} {column}")  # 调试日志，确保正确获取点击位置和列ID
         
         # 仅在第一列（复选框列）响应点击
         if region == 'cell' and column == 'selected':
@@ -613,7 +617,10 @@ class Obeserver(ModelObserver):
     def notify_loading_progress(self, progress_status: ProcessStatus) -> None:
         self.handler.queue.put(("show_process_status", progress_status))
 
-if __name__ == "__main__":
+def run():
     root = tk.Tk()
     app = BackupApp(root)
     root.mainloop()
+
+if __name__ == "__main__":
+    run()

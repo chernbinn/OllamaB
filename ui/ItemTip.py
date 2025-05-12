@@ -52,8 +52,10 @@ class ItemTip:
         if not self.itemtipview:
             self._create_ItemTipView()
 
+        logger.debug(f"Show itemtipview, item_name: {item_name}, auto_hide: {auto_hide}")  # 调试信息，确保显示被调用
+        content = None
         # 更新内容
-        if item_name.startswith("backup_"):
+        if item_name.startswith("backup_") or item_name.endswith(".zip"):
             #content = Statistics.get_backup_status(item_name)
             return False
         elif item_name.startswith("blobs"):
@@ -61,8 +63,12 @@ class ItemTip:
         elif item_name.startswith("manifests"):
             #content = Statistics.get_manifest(item_name)
             return False
-        else:  # 模型名称，显示模型的status信息
-            #content = Statistics.get_model(item_name)
+        elif item_name:  # 模型名称，显示模型的status信息
+            content = Statistics.get_model(item_name)
+            #return False
+        
+        if content is None:  # 内容为空，不显示
+            logger.debug(f"ItemTip: {item_name} content is None")
             return False
         # 取消任何待执行的隐藏操作
         if self.hide_id:

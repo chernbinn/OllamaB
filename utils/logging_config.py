@@ -11,7 +11,7 @@ import atexit
 from logging.handlers import RotatingFileHandler
 
 _app_name = "ollama_backup"
-_release = False
+_release = True
 # release版本使用统一的log等级
 # 非release版本，使用各自模块的log等级
 _release_log_level = logging.INFO
@@ -225,6 +225,7 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
     """
     effective_log_level = _release_log_level if _release else log_level
     global_log_level = _release_log_level if _release else logging.DEBUG
+    app_name = f"{_app_name}_{'release' if _release else 'debug'}"
 
     # 获取调用模块名称
     module_name = log_tag
@@ -250,15 +251,15 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
     if not isinstance(sys.stdout, Tee) or not isinstance(sys.stderr, Tee):
         # print("-------- setup Tee --------")
         # 配置标准输出重定向
-        log_files = [f"logs/{_app_name}.log"]
+        log_files = [f"logs/{app_name}.log"]
         if b_log_file:
-            log_files.append(f"logs/{_app_name}_{module_name}.log")
+            log_files.append(f"logs/{app_name}_{module_name}.log")
         
         rotating_config = {
             'max_bytes': max_bytes,
             'backup_count': backup_count
         }
-        sys.stdout = Tee([f"logs/{_app_name}.log"], sys.stdout, "a", rotating_config)
+        sys.stdout = Tee([f"logs/{app_name}.log"], sys.stdout, "a", rotating_config)
         sys.stderr = Tee(log_files, sys.stderr, "a", rotating_config)
 
     # 控制台handler
@@ -273,7 +274,7 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
     """
     # 全局日志文件（记录所有模块）
     global_handler = logging.handlers.RotatingFileHandler(
-        f"{_app_name}.log",
+        f"{app_name}.log",
         maxBytes=max_bytes,
         backupCount=backup_count,
         encoding='utf-8',
@@ -286,14 +287,14 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
 
     if b_log_file:
         module_handler = _file_manager.get_rotating_handler(
-            f"logs/{_app_name}_{module_name}.log",
+            f"logs/{app_name}_{module_name}.log",
             max_bytes=max_bytes,
             backup_count=backup_count,
             mode="a"
         )
         """
         logging.handlers.RotatingFileHandler(
-            f"{_app_name}_{log_tag}.log",
+            f"{app_name}_{log_tag}.log",
             maxBytes=max_bytes,
             backupCount=backup_count,
             encoding='utf-8',

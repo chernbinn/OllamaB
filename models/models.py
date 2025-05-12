@@ -286,7 +286,7 @@ class ModelData:
         blob = self.get_blob(name)
         if not blob or not blob.size:
             logger.debug(f"blob不存在或大小为0: {name}")
-            return 0 if not b_human else "0B"
+            return 0 if not b_human else "加载中..." #"0B"
         if b_human:
             return self._human_readable_size(blob.size) if blob else ""
         return blob.size
