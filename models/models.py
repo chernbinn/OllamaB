@@ -1,6 +1,6 @@
 import logging
 from typing import List, Dict, Optional, Protocol, runtime_checkable, Union
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import copy, os
 import logging
 from utils.logging_config import setup_logging
@@ -9,7 +9,7 @@ from enum import Enum
 from functools import wraps
 
 # 初始化日志配置
-logger = setup_logging(log_level=logging.DEBUG, log_tag="models")
+logger = setup_logging(log_level=logging.INFO, log_tag="models")
 
 class ModelBackupStatus(BaseModel):
     model_name: str
@@ -21,9 +21,19 @@ class ModelBackupStatus(BaseModel):
 
 class Blob(BaseModel):
     name: str
-    size: int
-    md5: str
-    path: str 
+    size: int|None = None
+    md5: str|None = None
+    path: str|None = None
+    models: List[str] = Field(default_factory=list)
+
+    def append_model(self, model_name: str) -> None:
+        if model_name not in self.models:
+            self.models.append(model_name)
+        #return self
+    
+    def remove_model(self, model_name: str) -> None:
+        if model_name in self.models:
+            self.models.remove(model_name)
 
 class LLMModel(BaseModel):
     model_path: str|None = None
@@ -141,6 +151,14 @@ class ModelData:
                 bk_status = self._models[model.name].bk_status if model.bk_status is None else model.bk_status
                 model.bk_status = bk_status
             self._models[model.name] = model
+            for blob in model.blobs:
+                if blob not in self._blobs:
+                    #logger.debug(f"添加blob: {blob}")
+                    self._blobs[blob] = Blob(name=blob, size=None, md5=None, path=None)
+                    self._blobs[blob].append_model(model.name)
+                else:
+                    #logger.debug(f"blob已存在: {blob}")
+                    self._blobs[blob].append_model(model.name)
         self._notify_observers("notify_set_model", copy.deepcopy(model))
 
     def delete_model(self, model: LLMModel) -> None:
@@ -180,7 +198,7 @@ class ModelData:
         else:
             self._notify_observers("notify_set_model", copy.deepcopy(model))
 
-    def get_backup_status(self, model_name: str) -> Optional[str]:
+    def get_backup_status(self, model_name: str) -> Optional[ModelBackupStatus]:
         """获取模型备份状态"""
         with self._lock:
             try:
@@ -249,16 +267,25 @@ class ModelData:
     def set_blob(self, blob: Blob) -> None:
         """添加 Blob 信息"""
         with self._lock:
-            self._blobs[blob.name] = blob
+            if blob.name in self._blobs:
+                logger.debug(f"setblob-更新blob: {blob.name}")
+                self._blobs[blob.name].size = blob.size
+                self._blobs[blob.name].md5 = blob.md5
+                self._blobs[blob.name].path = blob.path
+            else:
+                logger.debug(f"set-blob添加blob: {blob.name}")
+                self._blobs[blob.name] = blob
         self._notify_observers("notify_set_blob", copy.deepcopy(blob))
     def get_blob(self, name: str) -> Optional[Blob]:
         """获取 Blob 信息"""
         with self._lock:
+            #logger.debug(f"获取blob: {name}")
             return copy.deepcopy(self._blobs.get(name, None))
     def get_blob_size(self, name: str, b_human: bool=False) -> str|int:
         """获取 Blob 大小"""
         blob = self.get_blob(name)
-        if not blob:
+        if not blob or not blob.size:
+            logger.debug(f"blob不存在或大小为0: {name}")
             return 0 if not b_human else "0B"
         if b_human:
             return self._human_readable_size(blob.size) if blob else ""

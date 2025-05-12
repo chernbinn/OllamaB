@@ -15,7 +15,7 @@ import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.logging_config import setup_logging
 
-logger = setup_logging(log_level=logging.DEBUG,b_log_file=False)
+logger = setup_logging(log_level=logging.INFO,b_log_file=False)
 
 class ProcessTerminator:
     @staticmethod
@@ -233,7 +233,7 @@ class AsyncExecutor:
         
         with self._lock:            
             if task_id in self._running_tasks or task_id in self._queued_tasks:
-                logger.error(f"Task {task_id} already exists")
+                logger.warning(f"Task {task_id} already exists")
                 return False
             logger.debug(f"_thread_pool._max_workers: {self._thread_pool._max_workers}")
             logger.debug(f"_process_pool._max_workers: {self._process_pool._max_workers}")
@@ -489,8 +489,8 @@ class AsyncExecutor:
         except Exception as e:
             logger.error(f"Failed to submit queued task {task_id}: {e}")
         # 留作测试ansync中未捕获异常如何输出到日志文件
-        # self._queued_tasks.pop(task_id)
-        # self._queued_tasks.pop(task_id)
+        #self._queued_tasks.pop(task_id)
+        #self._queued_tasks.pop(task_id)
         if task_id in self._queued_tasks:
             self._queued_tasks.pop(task_id, None)
 

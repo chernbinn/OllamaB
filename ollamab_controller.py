@@ -20,7 +20,7 @@ from utils.AsyncExecutor import AsyncExecutor
 from functools import partial
 
 # 初始化日志配置
-logger = setup_logging(log_level=logging.DEBUG, log_tag="ollamab_controller")
+logger = setup_logging(log_level=logging.INFO, log_tag="ollamab_controller")
 
 class ModelDatialFile(BaseModel):
     model_file_path: str
@@ -231,7 +231,7 @@ class AsyncLoad:
     _data_stop_event = threading.Event()
     _data_ready_event = threading.Event()
     _model_queue = Queue()
-    _task_list = []
+    _task_list = set()
     
     @classmethod
     def init(cls, model_path: str, backup_path: str):
@@ -247,10 +247,10 @@ class AsyncLoad:
                 cls._model_queue.get()
             cls._data_stop_event.clear()
             cls._data_ready_event.clear() 
-            cls._task_list = []
+            cls._task_list = set()
 
             cls.async_executor = AsyncExecutor()
-            cls.async_executor.set_concurrency(5, 1)
+            cls.async_executor.set_concurrency(3, 1)
 
     @classmethod
     def load_models(cls, model_path: str, backup_path: str):
@@ -268,7 +268,7 @@ class AsyncLoad:
         cls._check_dirbackup_thread()
 
         with cls._lock:
-            cls._task_list.append("load_blobs")
+            cls._task_list.add("load_blobs")
         cls.async_executor.execute_async(
             "load_blobs",
             cls._iter_blobs_task,
@@ -299,7 +299,7 @@ class AsyncLoad:
     @classmethod
     def _init_models_thread(cls):
         with cls._lock:
-            cls._task_list.append("load_models")
+            cls._task_list.add("load_models")
         cls.async_executor.execute_async(
             "load_models",
             cls._init_models_task if not cls.model_data.initialized else cls._get_models_task,
@@ -311,7 +311,7 @@ class AsyncLoad:
     @classmethod
     def _check_dirbackup_thread(cls):
         with cls._lock:
-            cls._task_list.append("check_allbackup")
+            cls._task_list.add("check_allbackup")
         cls.async_executor.execute_async(
             "check_allbackup",
             cls._check_backup_task,
@@ -389,7 +389,7 @@ class AsyncLoad:
                         continue
                     dest_path = os.path.join(cls.backup_path, zip_name)                    
                     with cls._lock:
-                        cls._task_list.append(f"loadcheck_{model_name}")
+                        cls._task_list.add(f"loadcheck_{model_name}")
                         logger.debug(f"loadcheck_{model_name}")
                     cls.async_executor.execute_async(
                         f"loadcheck_{model_name}",
@@ -495,16 +495,19 @@ class AsyncLoad:
             blob_path = os.path.join(blobs_path, blob)
             if os.path.isfile(blob_path):
                 try:
-                    if cls.model_data.get_blob(blob):
+                    """
+                    blob = cls.model_data.get_blob(blob)
+                    if  blob and blob.path and blob.size:
                         continue
+                    """
                     with cls._lock:
-                        cls._task_list.append(f"loadblob_{blob}")
+                        cls._task_list.add(f"loadblob_{blob}")
                     cls.async_executor.execute_async(
                         f"loadblob_{blob}",
                         lambda cls_ref, blob, blob_path: cls_ref.model_data.set_blob(Blob(**{
                             'name': blob,
                             'size': os.path.getsize(blob_path),
-                            'md5': hashlib.md5(open(blob_path, 'rb').read()).hexdigest(),
+                            'md5': None, # hashlib.md5(open(blob_path, 'rb').read()).hexdigest(),
                             'path': blob_path,
                         })),
                         cls, blob, blob_path,
@@ -523,7 +526,8 @@ class AsyncLoad:
                 if task_id in cls._task_list:
                     cls._task_list.remove(task_id)
 
-                if len(cls._task_list) == 0:
+                logger.debug(f"pending task: {cls._task_list} exist task: {cls.async_executor.has_tasks()}")
+                if len(cls._task_list) == 0 or cls.async_executor.has_tasks() == 0:
                     cls._isLoading = False
                     cls.model_data.initialized = True
         else:

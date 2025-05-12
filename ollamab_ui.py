@@ -3,7 +3,6 @@ from tkinter import ttk, filedialog, messagebox
 import logging
 import os
 import threading
-from typing import override
 from ollamab_controller import BackupController
 from models import (
     ModelBackupStatus, 
@@ -14,7 +13,6 @@ from models import (
     ProcessEvent,
     Blob
 )
-from theme import Theme, StyleConfigurator
 import queue
 from threading import Thread
 from pathlib import Path
@@ -25,6 +23,8 @@ from utils import (
 )
 from ui import (
     ItemTip,
+    Theme,
+    StyleConfigurator,
 )
 
 # 初始化日志配置
@@ -76,9 +76,6 @@ class BackupApp:
     def init(self):
         """ 异步初始化，不可以初始化UI组件。不可以直接刷新UI """
         logger.info("开始初始化...")
-        self.current_tooltip = None 
-
-        self.itemtip = ItemTip(self.master)
         self.tree_items: MultiKeyDict = MultiKeyDict()
         self.data_lock = threading.Lock()
         self.controller = BackupController(self.model_path, self.backup_path)
@@ -100,6 +97,7 @@ class BackupApp:
         self.uiHandler.running = False
         self.master.destroy()
         self.controller.destroy(True)
+        self.itemtip.destroy()
 
     def on_close(self):
         """处理窗口关闭事件，释放资源"""  
@@ -124,7 +122,7 @@ class BackupApp:
             else:
                 logger.info("用户取消退出应用程序。")
 
-    def create_widgets(self)->None:
+    def create_widgets(self)->None:        
         # 主框架
         main_frame = ttk.Frame(self.master)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -198,12 +196,12 @@ class BackupApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         info_panel.add(tree_frame)
 
+        self.itemtip = ItemTip(self.master)
+
         # 绑定事件
         self.tree.bind('<Button-1>', self.toggle_checkbox)
         self.tree.bind('<Motion>', self.on_hover)
-        self.tree.bind('<Leave>', self._hide_tooltip)
-        # 添加选中项变更事件
-        # self.tree.bind('<<TreeviewOpen>>', self.update_node_status)
+        self.tree.bind('<Leave>', self.itemtip.hide)
 
         # 添加状态栏，状态栏绑定变量
         self.status_var = tk.StringVar(value="加载中")
@@ -213,42 +211,10 @@ class BackupApp:
 
     def on_hover(self, event):
         """处理鼠标悬停事件，显示详情页面"""
-        # 销毁当前详情页面
-        self._hide_tooltip()
-        
         item = self.tree.identify_row(event.y)
         if item:
-            model_name = self.tree.item(item, 'text')
-            model = self.model_data.get_model(model_name)
-            if model:                
-                self._show_tooltip(model)
-
-    def _show_tooltip(self, model):
-        """显示模型详情工具提示"""
-        tooltip = tk.Toplevel(self.master)
-        tooltip.wm_overrideredirect(True)
-        tooltip.wm_geometry(f"+{self.master.winfo_pointerx()+10}+{self.master.winfo_pointery()+10}")
-
-        content = f"模型名称: {model.name}\n"
-        content += f"描述: {model.description}\n"
-        content += f"版本: {model.version}\n"
-        content += f"LLM: {model.llm}\n"
-
-        label = ttk.Label(tooltip, text=content, background='#FFFFE0', relief='solid', borderwidth=1)
-        label.pack(ipadx=5, ipady=5)
-
-        # 绑定鼠标离开事件（包括树控件和工具提示本身）        
-        tooltip.bind('<Leave>', self._hide_tooltip)
-        self.current_tooltip = tooltip
-
-    def _hide_tooltip(self, event=None):
-        """隐藏工具提示"""
-        if hasattr(self, 'current_tooltip') and self.current_tooltip:
-            self.current_tooltip.destroy()
-            del self.current_tooltip
-            self.current_tooltip = None
-        # 解绑事件处理器
-        #self.tree.unbind('<Leave>', self._hide_tooltip)
+            item_name = self.tree.item(item, 'text')
+            self.itemtip.show(item_name)
 
     def toggle_checkbox(self, event:any)->None:
         # 获取点击位置的列ID
@@ -487,7 +453,7 @@ class BackupApp:
 
     def _insert_zipfile(self, parent, status: ModelBackupStatus)->None:
         logger.debug(f"插入zipfile: {status.zip_file}")  # 调试日志，确保正确获取模型名称        
-        zipfilename = os.path.basename(status.zip_file)
+        zipfilename = "备份文件：" + os.path.basename(status.zip_file)
         zipfile_item = self.tree.insert(parent, 'end', values=('', '',), text=zipfilename,
                         tags=('childrow'))
         self.tree_items[zipfilename] = zipfile_item            
@@ -637,6 +603,7 @@ class Obeserver(ModelObserver):
     def notify_delete_model(self, model: LLMModel) -> None:
         self.handler.queue.put(("delete_model", model))
     def notify_set_blob(self, blob: Blob) -> None:
+        #logger.debug(f"通知更新blob: {blob}")
         self.handler.queue.put(("set_blob", blob))
     def notify_set_backup_status(self, status: ModelBackupStatus) -> None:
         logger.debug(f"通知更新备份状态: {status}")
