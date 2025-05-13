@@ -1,7 +1,7 @@
 import asyncio
 import threading
 import concurrent.futures
-from typing import Callable, Any, Dict, Optional, Union
+from typing import Callable, Any, Dict, Optional, Union, Tuple
 from concurrent.futures import Future, ThreadPoolExecutor, ProcessPoolExecutor
 from functools import partial, wraps
 from queue import Queue
@@ -10,7 +10,7 @@ import time
 from multiprocessing.managers import DictProxy
 from multiprocessing import Manager, Lock
 import psutil, signal, sys
-import dill
+from collections import OrderedDict
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.logging_config import setup_logging
@@ -51,65 +51,109 @@ class ProcessTerminator:
             logger.error(f"POSIX terminate failed: {e}")
             return False
 
-class RunningTasksContainer:
+class TasksContainer:
     def __init__(self):
-        self._data: Dict[str, Dict[str, Any]] = {}  # 保持 {task_id: {"future": Future, "is_long_task": bool}} 结构
+        self._short_tasks: OrderedDict[str, Dict] = OrderedDict()  # 短任务
+        self._long_tasks: OrderedDict[str, Dict] = OrderedDict()   # 长任务
 
-    def __setitem__(self, task_id: str, task_info: Dict[str, Any]):
-        """保持原有赋值方式"""
-        if not isinstance(task_info, dict) or "future" not in task_info or "is_long_task" not in task_info:
-            raise ValueError("Task info must contain 'future' and 'is_long_task'")
-        self._data[task_id] = task_info
+    def __setitem__(self, task_id: str, task_info: Dict):
+        if not isinstance(task_info, dict) or "is_long_task" not in task_info:
+            raise ValueError("Task info must contain 'is_long_task'")
+        if task_info["is_long_task"]:
+            self._long_tasks[task_id] = task_info
+        else:
+            self._short_tasks[task_id] = task_info
 
-    def __getitem__(self, task_id: str) -> Dict[str, Any]:
-        """保持原有取值方式"""
-        return self._data[task_id]
+    def __getitem__(self, task_id: str) -> Dict:
+        if task_id in self._short_tasks:
+            return self._short_tasks[task_id]
+        elif task_id in self._long_tasks:
+            return self._long_tasks[task_id]
+        raise KeyError(task_id)
 
     def __delitem__(self, task_id: str):
-        """保持原有删除方式"""
-        del self._data[task_id]
+        if task_id in self._short_tasks:
+            del self._short_tasks[task_id]
+        elif task_id in self._long_tasks:
+            del self._long_tasks[task_id]
+        else:
+            raise KeyError(task_id)
 
     def __contains__(self, task_id: str) -> bool:
-        """保持原有in判断"""
-        return task_id in self._data
+        return task_id in self._short_tasks or task_id in self._long_tasks
 
-    def get(self, task_id: str, default=None) -> Optional[Dict[str, Any]]:
-        """保持原有get方法"""
-        return self._data.get(task_id, default)
+    def get(self, task_id: str, default=None) -> Optional[Dict]:
+        try:
+            return self[task_id]
+        except KeyError:
+            return default
 
     def keys(self):
-        """保持keys()方法"""
-        return self._data.keys()
+        return list(self._short_tasks.keys()) + list(self._long_tasks.keys())
 
     def values(self):
-        """保持values()方法"""
-        return self._data.values()
+        return list(self._short_tasks.values()) + list(self._long_tasks.values())
 
     def items(self):
-        """保持items()方法"""
-        return self._data.items()
+        return list(self._short_tasks.items()) + list(self._long_tasks.items())
 
     def __len__(self) -> int:
-        """保持len()方法"""
-        return len(self._data)
+        return len(self._short_tasks) + len(self._long_tasks)
 
     @property
     def long_task_count(self) -> int:
-        """获取长任务数量"""
-        return sum(1 for task in self._data.values() if task["is_long_task"])
+        return len(self._long_tasks)
 
     @property
     def short_task_count(self) -> int:
-        """获取短任务数量"""
-        return sum(1 for task in self._data.values() if not task["is_long_task"])
+        return len(self._short_tasks)
 
-    def pop(self, task_id: str, default=None) -> Optional[Dict[str, Any]]:
-        """保持pop方法"""
-        return self._data.pop(task_id, default)
-    
+    def pop(self, task_id: str, default=None) -> Optional[Dict]:
+        if task_id in self._short_tasks:
+            return self._short_tasks.pop(task_id)
+        elif task_id in self._long_tasks:
+            return self._long_tasks.pop(task_id)
+        return default
+
     def clear(self):
-        """清空容器"""
-        self._data.clear()
+        self._short_tasks.clear()
+        self._long_tasks.clear()
+
+    def pop_long_task(self) -> Optional[Dict]:
+        if self._long_tasks:
+            task_id, task = self._long_tasks.popitem(last=False)  # FIFO
+            return task
+        return None
+
+    def pop_short_task(self) -> Optional[Dict]:
+        if self._short_tasks:
+            task_id, task = self._short_tasks.popitem(last=False)  # FIFO
+            return task
+        return None
+
+    def get_long_tasks(self) -> Dict[str, Dict]:
+        return dict(self._long_tasks)
+
+    def get_short_tasks(self) -> Dict[str, Dict]:
+        return dict(self._short_tasks)
+
+    def pop_oldest_long_task(self) -> Optional[Dict]:
+        return self.pop_long_task()
+
+    def pop_oldest_short_task(self) -> Optional[Dict]:
+        return self.pop_short_task()
+
+    def get_oldest_long_task(self) -> Optional[Tuple[str, Dict]]:
+        if self._long_tasks:
+            task_id, task = next(iter(self._long_tasks.items()))
+            return task_id, task
+        return None, None
+
+    def get_oldest_short_task(self) -> Optional[Tuple[str, Dict]]:
+        if self._short_tasks:
+            task_id, task = next(iter(self._short_tasks.items()))
+            return task_id, task
+        return None, None
 
 class CancellationSignal:
     """用于标记任务被取消的特殊对象"""
@@ -164,8 +208,8 @@ class AsyncExecutor:
         self._thread_pool = ThreadPoolExecutor(max_workers=max_workers)
         self._process_pool = ProcessPoolExecutor(max_workers=max_processes)
         #self._running_tasks: Dict[str, Dict[Future, bool]] = {}
-        self._running_tasks: RunningTasksContainer = RunningTasksContainer()
-        self._queued_tasks: Dict[str, Dict] = {}  # 存储排队中的任务
+        self._running_tasks: TasksContainer = TasksContainer()
+        self._queued_tasks: TasksContainer = TasksContainer()#Dict[str, Dict] = {}  # 存储排队中的任务
         self._event_loop_thread: Optional[threading.Thread] = None
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
         
@@ -178,10 +222,12 @@ class AsyncExecutor:
             self._callback_queue = Queue()  # 用于主线程回调
 
         self._manager = Manager()
-        self._process_pids = self._manager.dict()  # 共享字典
+        self._process_pids = self._manager.dict()  # 共享字典, {task_id: pid}
         self._process_lock = self._manager.Lock()  # 共享锁
 
+        """
         self._latest_task:Dict = None  # 最近提交的任务ID
+        """
         self._notify_processing = None
 
         self._initialized = True
@@ -318,10 +364,12 @@ class AsyncExecutor:
         
         if not self._shutdown_flag:
             with self._lock:
+                """
                 if self._latest_task and self._latest_task['task_id'] == task_id:
                     self._latest_task = None
-                exist_id = task_id in self._running_tasks
-                is_callback = self._callback_direct                
+                """
+                #exist_id = task_id in self._running_tasks
+                #is_callback = self._callback_direct
                 if not self._callback_direct:
                     self._callback_queue.put((callback, result))
                 future = self._running_tasks.get(task_id, {}).get('future')
@@ -331,10 +379,11 @@ class AsyncExecutor:
                         logger.info(f"Task: {task_id} completed, precessing next queued task")
                         self._process_next_queued_task()
 
-            if all([callback and isinstance(callback, Callable),
-                    exist_id and is_callback
-                    ]):
-                callback(result)            
+        if all([callback and isinstance(callback, Callable),
+                self._callback_direct,
+                # exist_id
+                ]):
+            callback(result)
 
     def _cleanup_task(self, task_id: str):
         """清理任务资源的公共方法"""        
@@ -396,6 +445,7 @@ class AsyncExecutor:
                 async_wrapper(),
                 self._event_loop
             )
+        """
         self._latest_task = {
                     'task_id': task_id,
                     'func': func,
@@ -404,6 +454,7 @@ class AsyncExecutor:
                     'callback': callback,
                     'is_long_task': is_long_task
                     }
+        """
         # partial(self._done_callback, task_id, callback) 和使用lambda的效果是一样的
         # 但是使用partial可以避免lambda的闭包问题，同时也可以传递参数
         future.add_done_callback(partial(self._done_callback, task_id, callback))
@@ -426,9 +477,10 @@ class AsyncExecutor:
         注意：
             1. 最近提交的任务执行成功，并且队列中还有任务，那么立即执行队列中的任务
             2. 最近提交的任务执行失败，并且队列中还有任务，那么不执行队列中的任务，重新提交最近的任务
-        """
+        """        
+        if self._process_pool._broken:  # 检查进程池是否健康
+            self._restart_process_pool()
         logger.info(f"Processing next queued task, current queue size: {len(self._queued_tasks)}")
-
         """ 根据实际测试，任务提交失败也会回到执行_done_callback, 所以这里不需要判断任务是否执行成功 """
         """
         task_id = None
@@ -462,21 +514,18 @@ class AsyncExecutor:
         ]):
             logger.info(f"Queue is empty, no task to process")
             return
-        task_id, task_data = next(iter(self._queued_tasks.items()))
-
-        callback = task_data.get('callback')
-        is_long_task = task_data.get('is_long_task')
-
-        if any([
-            is_long_task and len(self._process_pids) >= self._process_pool._max_workers,
-            not is_long_task and len(self._running_tasks) >= self._thread_pool._max_workers
-        ]):
-            logger.info(f"Execut unit is full, need to wait for some time")
+        # task_id, task_data = next(iter(self._queued_tasks.items()))
+        if self._running_tasks.short_task_count < self._thread_pool._max_workers and self._queued_tasks.short_task_count > 0:
+            task_id, task_data = self._queued_tasks.get_oldest_short_task()
+            logger.info(f"To process short task {task_id}, short task queued: {self._queued_tasks.short_task_count}")
+        elif len(self._process_pids) < self._process_pool._max_workers and self._queued_tasks.long_task_count > 0:
+            task_id, task_data = self._queued_tasks.get_oldest_long_task()
+            logger.info(f"To process long task {task_id}, long task queued: {self._queued_tasks.long_task_count}")
+        else:
+            logger.info(f"Execut units are full, need to wait for some time")
             return
 
-        if self._process_pool._broken:  # 检查进程池是否健康
-            self._restart_process_pool()
-        
+        callback = task_data.get('callback')        
         try:
             self._submit_task(
                 task_id,
@@ -486,13 +535,13 @@ class AsyncExecutor:
                 *task_data['args'],
                 **task_data['kwargs']
             )
+            if task_id in self._queued_tasks:
+                self._queued_tasks.pop(task_id, None)
         except Exception as e:
             logger.error(f"Failed to submit queued task {task_id}: {e}")
         # 留作测试ansync中未捕获异常如何输出到日志文件
         #self._queued_tasks.pop(task_id)
         #self._queued_tasks.pop(task_id)
-        if task_id in self._queued_tasks:
-            self._queued_tasks.pop(task_id, None)
 
     def process_callbacks(self) -> None:
         """在主线程中处理回调（需要在主线程定期调用）"""
@@ -530,8 +579,10 @@ class AsyncExecutor:
     def cancel_task(self, task_id: str, timeout: float=1.0) -> bool:
         """取消任务（包括排队中的任务）"""
         with self._lock:
+            """
             if self._latest_task and self._latest_task.get('task_id') == task_id:
                 self._latest_task = None
+            """
             # 1. 尝试取消排队中的任务（无论长短任务）
             if task_id in self._queued_tasks:
                 logger.info(f"Cancelling queued task: {task_id}")
@@ -660,7 +711,9 @@ class AsyncExecutor:
         self._shutdown_flag = True
         
         with self._lock:
+            """
             self._latest_task = None
+            """
             self._queued_tasks.clear()            
             self._loop_ready.clear()  # 停止事件循环
 
