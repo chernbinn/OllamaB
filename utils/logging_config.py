@@ -3,18 +3,75 @@
 import logging
 import inspect
 import sys
-import os
+import os, json
+from pathlib import Path
 import threading
-from typing import List, Optional, TextIO, Dict
+from typing import TextIO, Dict
 from threading import Lock
 import atexit
 from logging.handlers import RotatingFileHandler
 
-_app_name = "ollama_backup"
-_release = True
-# release版本使用统一的log等级
-# 非release版本，使用各自模块的log等级
-_release_log_level = logging.INFO
+# 需要开发者主动配置,可以是相对路径，也可以是绝对路径（相对于当前文件logging_config.py的路径）
+_config_path="..\\logging.json"
+""" json demo content:
+{
+    "app_name": "Ollamab",
+    "release": true,
+    "release_log_level": "INFO",
+    "log_format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    "file_logging": {
+      "enabled": true,
+      "max_bytes": 10485760,
+      "backup_count": 0
+    }
+  }
+"""
+
+_DEFAULT_CONFIG = {
+    "app_name": "app",
+    "release": False,
+    "release_log_level": logging.INFO,  # release版本默认使用INFO级别，开发版本各模块使用各自的级别
+    "file_logging": {
+      "enabled": True,
+      "max_bytes": 10485760,
+      "backup_count": 0
+    }
+}
+# 由于__init__.py的存在，在main.py中配置日志都是晚的。最好的方式是在第一次加载该模块时，主动从配置文件中读取配置
+def _load_config():
+    """从配置文件加载配置"""
+    global _current_config
+    
+    # 确定配置文件路径 (logging.json的路径)
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        #print(f"base_dir: {base_dir}")
+        # 规范化路径格式(统一分隔符)
+        normalized_path = os.path.normpath(_config_path)
+        # 转换为绝对路径
+        abs_path = normalized_path
+        if not os.path.isabs(normalized_path):
+            # 相对路径，结合基准目录
+            abs_path = os.path.normpath(os.path.join(base_dir, normalized_path))
+        config_path = str(Path(abs_path).resolve())
+        #print(f"config_path: {config_path}")
+    
+        # 如果找到配置文件则加载，否则使用默认配置
+        if os.path.exists(config_path):
+            print(f"-------- load logging config from: {config_path} --------")
+            with open(config_path, 'r') as f:
+                _current_config = {**_DEFAULT_CONFIG, **json.load(f)}
+            return True
+    except Exception as e:
+        print(f"加载日志配置文件失败: {e}, 使用默认配置")
+
+    print(f"""\033[93m
+    未找到日志配置文件，使用默认配置。如果需要自定义配置，请在项目根目录下创建logging.json文件,
+    且在logging_config.py中初始化logging.json路径。
+    \033[0m""")
+    
+    _current_config = _DEFAULT_CONFIG.copy()
+    return False
 
 class FileManager:
     """全局文件管理器（单例模式）"""
@@ -223,17 +280,14 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
     :param max_bytes: 单个日志文件最大字节数
     :param backup_count: 保留的备份日志文件数量
     """
-    effective_log_level = _release_log_level if _release else log_level
-    global_log_level = _release_log_level if _release else logging.DEBUG
-    app_name = f"{_app_name}_{'release' if _release else 'debug'}"
+    effective_log_level = _current_config["release_log_level"] if _current_config["release"] else log_level
+    global_log_level = _current_config["release_log_level"] if _current_config["release"] else logging.DEBUG
+    app_name = f"{_current_config["app_name"]}_{'release' if _current_config["release"] else 'debug'}"
 
     # 获取调用模块名称
     module_name = log_tag
     if not log_tag:
         module_name = _get_caller_module()
-        #frame = inspect.currentframe().f_back
-        #module_name = os.path.basename(frame.f_globals.get('__file__', 'unknown')).split('.')[0]
-        # log_tag = module_name  # 如果没有提供log_tag，则使用模块名称作为log_tag
     
     # 创建模块级logger
     logger = logging.getLogger(module_name)
@@ -245,29 +299,38 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
         logger.removeHandler(handler)
         handler.close()
     formatter = logging.Formatter(
+        _current_config["log_format"] if _current_config["log_format"] else
         '%(asctime)s-%(funcName)s:%(lineno)d-%(levelname)s-[%(name)s]%(message)s'
     )
     
-    if not isinstance(sys.stdout, Tee) or not isinstance(sys.stderr, Tee):
-        # print("-------- setup Tee --------")
-        # 配置标准输出重定向
-        log_files = [f"logs/{app_name}.log"]
-        if b_log_file:
-            log_files.append(f"logs/{app_name}_{module_name}.log")
-        
-        rotating_config = {
+    enable_file = _current_config["file_logging"]["enabled"] if _current_config.get("file_logging", {}).get("enabled") else False
+    #print(f"---------- enable_file: {enable_file} --------")
+    log_files = []
+    if enable_file and (not isinstance(sys.stdout, Tee) or not isinstance(sys.stderr, Tee)):
+        # 配置完全log文件，包括stdout、stderr
+        log_files.append(f"logs/{app_name}.log")
+        global_config = {
+            'max_bytes': _current_config["file_logging"]["max_bytes"] if _current_config.get("file_logging", {}).get("max_bytes") else 10*1024*1024,
+            'backup_count': _current_config["file_logging"]["backup_count"] if _current_config.get("file_logging", {}).get("backup_count") else 5
+        }
+        sys.stdout = Tee(log_files, sys.stdout, "a", global_config)
+        sys.stderr = Tee(log_files, sys.stderr, "a", global_config)
+
+    if b_log_file:
+        # 配置模块级log文件，不包括stdout，文件内容使用logging模块过滤所得及stderr重定向内容
+        log_files.append(f"logs/{app_name}_{module_name}.log")
+        moudle_config = {
             'max_bytes': max_bytes,
             'backup_count': backup_count
         }
-        sys.stdout = Tee([f"logs/{app_name}.log"], sys.stdout, "a", rotating_config)
-        sys.stderr = Tee(log_files, sys.stderr, "a", rotating_config)
+        sys.stderr = Tee(log_files, sys.stderr, "a", moudle_config)
 
     # 控制台handler
     # 在控制台格式中增加log_tag占位符
     console_formatter = formatter
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(console_formatter)
-    console_handler.setLevel(log_level)   # 处理器的日志级别
+    console_handler.setLevel(effective_log_level)   # 处理器的日志级别
     console_handler.encoding = 'utf-8'
     logger.addHandler(console_handler)
     
@@ -307,7 +370,9 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
         module_handler.setFormatter(formatter)
         logger.addHandler(module_handler)    
 
-    # 配置异常处理
+    # 配置异常处理, 使用了stdout、stderr重定向，不需要使用该方法
     #_setup_exception_handling(logger)
 
     return logger
+
+_load_config()
