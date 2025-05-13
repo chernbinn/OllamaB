@@ -5,7 +5,7 @@ import os
 import logging
 from utils import logging_config
 
-logger = logging_config.setup_logging(log_level=logging.DEBUG)
+logger = logging_config.setup_logging(log_level=logging.INFO)
 
 def hide_when_false(func):
     def wrapper(self, *args, **kwargs):
