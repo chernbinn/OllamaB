@@ -32,7 +32,7 @@ class UniqueQueue(Queue):
         try:
             return hashlib.md5(str(item).encode()).hexdigest()
         except:
-            return str(id(item))  # 最后手段，使用对象ID
+            raise ValueError(f"Unsupported hashable type: {type(item)}, item: {item}")
     
     def __contains__(self, item: Any) -> bool:
         """检查元素是否在队列中"""
@@ -69,7 +69,7 @@ class SafeUniqueQueue(Queue):
         try:
             return hashlib.md5(str(item).encode()).hexdigest()
         except:
-            return str(id(item))  # 最后手段，使用对象ID
+            raise ValueError(f"Unsupported hashable type: {type(item)}, item: {item}")
     
     def __contains__(self, item: Any) -> bool:
         """检查元素是否在队列中"""
