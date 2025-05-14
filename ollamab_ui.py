@@ -37,17 +37,19 @@ class BackupApp:
     def __init__(self, master):
         self.master = master        
         master.title("Ollama模型备份工具")        
-        master.geometry("1200x800")        
+        master.geometry("1200x800")
 
         # 状态符号配置
         self.CHECKED_SYMBOL = '[Y]'
         self.UNCHECKED_SYMBOL = '[ ]'
-        self.BACKUPED_SYMBOL = '[已备份]'
         self.CHECKING_SYMBOL = '[校验中]'
-        self.BACKUPED_ERROR_SYMBOL = '[备份异常]'
-        self.BACKUPED_FAILED_SYMBOL = '[备份失败]'
-        self.BACKUPING_SYMBOL = '[备份中]'
+        self.BACKUPED_SYMBOL = '[已备份]'        
+        self.BACKUPED_ERROR_SYMBOL = '[备份异常]'        
         self.BACKUP_QUEUED = '[排队中]'
+        self.BACKUPING_SYMBOL = '[备份中]'
+        self.BACKUPED_FAILED_SYMBOL = '[备份失败]'        
+        self.BACKUPING_CANCLED_SYMBOL = '[已取消]'
+        self.BACKUPING_CANCLE_SYMBOL = '[取消中]'
 
         self.default_backup_path = r"F:\llm_models\ollama_modes_backup"
         self.default_model_path = r"F:\llm_models\ollama_modes"
@@ -103,7 +105,7 @@ class BackupApp:
         """处理窗口关闭事件，释放资源"""  
         process_count = self.controller.get_backupping_count()
         queue_count = self.controller.get_queued_count()
-        if (process_count == 0 and queue_count == 0) or not self.model_data.initialized:
+        if self.controller.get_backupping_count() == 0: #(process_count == 0 and queue_count == 0) or not self.model_data.initialized:
             logger.info("没有正在进行的备份或排队备份，直接关闭应用程序。")
             self._release()
         else:
@@ -211,9 +213,17 @@ class BackupApp:
 
     def on_hover(self, event):
         """处理鼠标悬停事件，显示详情页面"""
-        logger.debug(f"on_hover: {event}")  # 调试日志，确保正确获取点击位置和列ID
+        #logger.debug(f"on_hover: {event}")  # 调试日志，确保正确获取点击位置和列ID
+        #width = self.tree.winfo_width()
+        #logger.debug(f"on_hover: {width}")  # 调试日志，确保正确获取点击位置和列ID        
+        #logger.debug(f'#0 width: {self.tree.column("#0", option="width")}')
+        tip_width = self.tree.column("#0", option="width")
+        if event.x > tip_width:
+            self.itemtip.hide()
+            return None
+
         item = self.tree.identify_row(event.y)
-        logger.debug(f"on_hover: {item}")  # 调试日志，确保正确获取点击位置和列ID
+        # logger.debug(f"on_hover: {item}")  # 调试日志，确保正确获取点击位置和列ID
         if item:
             item_name = self.tree.item(item, 'text')
             self.itemtip.show(item_name)
@@ -235,26 +245,27 @@ class BackupApp:
         if region == 'cell' and column == 'selected':
             item = self.tree.identify_row(event.y)    
             old_state = self.tree.set(item, 'selected')
-            logger.debug(f"当前状态: {old_state}")  # 调试日志，确保正确获取当前状态
-            new_state = self.CHECKED_SYMBOL if old_state == self.UNCHECKED_SYMBOL else self.UNCHECKED_SYMBOL
+            logger.debug(f"当前状态: {old_state}")  # 调试日志，确保正确获取当前状态            
 
             if any([
                 old_state == self.BACKUPED_ERROR_SYMBOL,
                 old_state == self.BACKUPED_SYMBOL,
                 old_state == self.CHECKING_SYMBOL,
+                old_state == self.BACKUPING_CANCLE_SYMBOL,                
             ]):
                 return
-
             model_name = self.tree.item(item, 'text')
             if any([
                 old_state == self.BACKUPING_SYMBOL,
-                old_state == self.CHECKED_SYMBOL,
-                old_state == self.BACKUP_QUEUED
             ]):
-                new_state = self.UNCHECKED_SYMBOL
+                self.cancle_backup(model_name, old_state)
+                return
+            
+            if old_state == self.BACKUP_QUEUED:
                 if not self.cancle_backup(model_name, old_state):
                     return
 
+            new_state = self.CHECKED_SYMBOL if old_state == self.UNCHECKED_SYMBOL else self.UNCHECKED_SYMBOL
             self.tree.set(item, 'selected', value=new_state)            
             logger.debug(f"复选框状态更新：{model_name} -> {new_state}")
     
@@ -283,21 +294,26 @@ class BackupApp:
 
         backuped = status.backup_status
         zip_file = status.zip_file
+        logger.debug(f"backuped: {backuped} zip_file: {zip_file}, zip_md5: {status.zip_md5} {status.backup_path}")
         if backuped:
             if zip_file and status.zip_md5:
-                return self.BACKUPED_SYMBOL
-            if zip_file and not status.zip_md5:
-                return self.CHECKING_SYMBOL
-            if status.backup_path and not zip_file:
-                return self.BACKUPING_SYMBOL
-            return self.BACKUP_QUEUED
+                return self.BACKUPED_SYMBOL # 已备份
+            if zip_file and not status.zip_md5 and status.backup_path:
+                return self.BACKUPED_ERROR_SYMBOL # 已备份，但校验失败
+            if zip_file and not status.zip_md5 and not status.backup_path:
+                return self.CHECKING_SYMBOL # 校验中
+            if not zip_file and status.backup_path:
+                return self.BACKUPING_SYMBOL # 备份中
+            return self.BACKUP_QUEUED # 备份队列中
         elif zip_file:
-            if status.zip_md5:
-                return self.BACKUPED_ERROR_SYMBOL                
-            elif status.zip_md5:
-                return self.BACKUPED_FAILED_SYMBOL
+            if status.zip_md5 and not status.backup_path:
+                return self.BACKUPED_FAILED_SYMBOL # 备份失败
+            elif status.backup_path:
+                return self.BACKUPING_CANCLED_SYMBOL # 备份已取消
+            else:
+                return self.BACKUPING_CANCLE_SYMBOL # 备份取消中
         else:
-            return self.UNCHECKED_SYMBOL
+            return self.UNCHECKED_SYMBOL # 未备份
 
     def _add_model(self, model: LLMModel)->None:
         with self.data_lock:
@@ -330,7 +346,7 @@ class BackupApp:
                 self.tree.set(item, column='size', value=humansize)
             
             if model.bk_status and model.bk_status.zip_md5:
-                cls._insert_zipfile(item, model.bk_status)
+                self._insert_zipfile(item, model.bk_status)
 
     def delete_model(self, model: LLMModel)->None:
         logger.debug(f"删除模型: {model.name}")  # 调试日志，确保正确获取模型名称
@@ -449,6 +465,13 @@ class BackupApp:
             backuped_value = self._get_backup_value(status)
             self.tree.set(item, 'selected', value=backuped_value)
             if not status.zip_md5:
+                seps = status.model_name.split(":")
+                pre_zip_name = f"backup_{seps[0]}_{seps[1]}"
+                for item in self.tree.get_children(item):
+                    item_text = self.tree.item(item, 'text')
+                    if item_text.startswith(pre_zip_name):
+                        self.tree.delete(item)
+                        del self.tree_items[item_text]
                 return
             zipfilename = os.path.basename(status.zip_file)
             zipfile_item = self.tree_items.get(zipfilename)
@@ -456,8 +479,11 @@ class BackupApp:
                 self._insert_zipfile(item, status)            
 
     def _insert_zipfile(self, parent, status: ModelBackupStatus)->None:
-        logger.debug(f"插入zipfile: {status.zip_file}")  # 调试日志，确保正确获取模型名称        
-        zipfilename = "备份文件：" + os.path.basename(status.zip_file)
+        logger.debug(f"插入zipfile: {status.zip_file}")  # 调试日志，确保正确获取模型名称
+        if status.zip_md5.startswith("invalid"):
+            zipfilename = "临时文件：" + status.zip_file
+        else:
+            zipfilename = "备份文件：" + os.path.basename(status.zip_file)
         zipfile_item = self.tree.insert(parent, 'end', values=('', '',), text=zipfilename,
                         tags=('childrow'))
         self.tree_items[zipfilename] = zipfile_item            
@@ -492,12 +518,13 @@ class BackupApp:
         # threading.Thread(target=self.run_backup, args=(selected_models,)).start()
     
     def cancle_backup(self, model_name: str, status: str)->bool:
-        if not self.controller.is_backupping(model_name):
-            return True
         if status == self.BACKUPING_SYMBOL:
             msg_info = "正在备份中，确定取消备份吗？"
-        else:
+        elif status == self.BACKUP_QUEUED:
             msg_info = "排队备份中，确定取消备份吗？"
+        if msg_info is None:
+            logger.warning(f"cancle_backup: {model_name} {status}, 只有正在备份和排队中的模型才能取消备份")
+            return False
         if not messagebox.askyesno("确认", msg_info):
             return False
         self.controller.cancle_backup(model_name)

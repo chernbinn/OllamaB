@@ -20,7 +20,7 @@ from utils.AsyncExecutor import AsyncExecutor
 from functools import partial
 
 # 初始化日志配置
-logger = setup_logging(log_level=logging.INFO, log_tag="ollamab_controller")
+logger = setup_logging(log_level=logging.DEBUG, log_tag="ollamab_controller")
 
 class ModelDatialFile(BaseModel):
     model_file_path: str
@@ -34,8 +34,9 @@ class BackupController:
         self.asyncExcutor = AsyncExecutor()
         self.cancle_backup_models = []
 
-        #self.asyncExcutor.set_notify_processing(self._process_async_task_status)
+        self.asyncExcutor.set_notify_processing(self._process_async_task_status)
         self.asyncExcutor.set_concurrency(7, 1)
+        self.b_shutdown = False
     
     def chdir_path(self, model_path: str, backup_path: str) -> None:
         """切换工作目录"""
@@ -66,7 +67,7 @@ class BackupController:
         """处理异步任务状态"""
         if task_id.startswith("backup_"):
             self.model_data.set_backup_status(ModelBackupStatus(
-                model_name=task_id,
+                model_name=task_id[len("backup_"):],
                 backup_path=self.backup_path,
                 backup_status=True,
                 zip_file=None
@@ -86,16 +87,35 @@ class BackupController:
         elif model_name in self.cancle_backup_models:
             logger.info(f"{model_name}取消备份成功")
             clean_temp_files(self.model_path, self.model_path, zip_name)
-        else:
-            logger.error(f"备份失败: {model_name}")
-            clean_temp_files(self.model_path, self.model_path)
             self.model_data.set_backup_status(ModelBackupStatus(
                 model_name=model_name,
-                backup_path=None,
+                backup_path=self.backup_path,
                 backup_status=False,
                 zip_file=zip_name,
                 zip_md5=None
             ))
+            """
+            for taskid in self.asyncExcutor.get_task_status().get("processes").keys():
+                model_name = taskid.split("_")[-1]
+                logger.info(f"开始备份模型: {model_name}")
+                self.model_data.set_backup_status(ModelBackupStatus(
+                    model_name=model,
+                    backup_path=self.backup_path,
+                    backup_status=True,
+                    zip_file=None
+                ))
+            """
+        else:
+            clean_temp_files(self.model_path, self.model_path, zip_name)
+            if not self.b_shutdown:
+                logger.error(f"备份失败: {model_name}")
+                self.model_data.set_backup_status(ModelBackupStatus(
+                    model_name=model_name,
+                    backup_path=None,
+                    backup_status=False,
+                    zip_file=os.path.join(self.model_path, zip_name),
+                    zip_md5='invalidmd5'
+                ))
 
     def _get_zip_name(self, model_name: str) -> str:
         """获取zip文件名"""
@@ -137,14 +157,19 @@ class BackupController:
                 if not res:
                     logger.error(f"提交异步备份模型失败: {model}")
                     continue
-                if not self.asyncExcutor.is_queued(model):
+                """
+                if not self.asyncExcutor.is_queued(f"backup_{model}"):
+                    logger.info(f"模型{model}提交备份任务成功，并且开始执行！")
                     self.model_data.set_backup_status(ModelBackupStatus(
                         model_name=model,
                         backup_path=self.backup_path,
                         backup_status=True,
                         zip_file=None
-                    ))
+                    )
                 else:
+                """
+                if self.asyncExcutor.is_queued(f"backup_{model}"):
+                    logger.info(f"模型{model}提交备份任务成功，但是还未开始执行，排队中！")
                     self.model_data.set_backup_status(ModelBackupStatus(
                         model_name=model,
                         backup_path=None,
@@ -157,8 +182,18 @@ class BackupController:
     
     def cancle_backup(self, model_name: str) -> None:
         """取消备份"""
-        self.cancle_backup_models.append(model_name)
-        self.asyncExcutor.cancel_task(model_name)
+        logger.debug(f"取消备份: {model_name}")
+        if self.is_backupping(model_name):
+            logger.info(f"取消正在进行的备份: {model_name}")
+            self.cancle_backup_models.append(model_name)
+            self.model_data.set_backup_status(ModelBackupStatus(
+                model_name=model_name,
+                backup_path=None,
+                backup_status=False,
+                zip_file=self._get_zip_name(model_name),
+                zip_md5=None
+            ))
+        self.asyncExcutor.cancel_task(f"backup_{model_name}")
 
     def _get_model_detail_file(self, model_name, model_file=None)->ModelDatialFile|None:
         llmmodel = self.model_data.get_model(model_name)
@@ -207,14 +242,30 @@ class BackupController:
     def get_queued_count(self):
         return self.asyncExcutor.get_queued_task_count()
     
+    def clean_temp_files(self):
+        for file in os.listdir(self.model_path):
+            if file.endswith(".zip") and file.startswith("backup_"):
+                count = 0
+                while True:
+                    os.remove(os.path.join(self.model_path, zip))
+                    time.sleep(300)
+                    if not os.path.exists(os.path.join(self.model_path, zip)):
+                        break
+                    count += 1
+                    if count > 3:
+                        logger.error(f"删除{zip}文件失败，尝试3次后仍然存在！")
+                        break
+
     def destroy(self, force: bool=False)->bool:
         if force:
-            
+            self.b_shutdown = True
             self.asyncExcutor.shutdown()
         elif self.asyncExcutor.is_all_tasks_done():
+            self.b_shutdown = True
             self.asyncExcutor.shutdown()
         else:
             return False
+        self.clean_temp_files()
         return True
 
 
@@ -370,6 +421,15 @@ class AsyncLoad:
                 if queue:
                     queue.put([model_name, zip_name])
                 backuped_models.append(model_name)
+
+        for file in os.listdir(cls.model_path):
+            if file.endswith('.zip'):
+                seps = file.split('_')
+                model_name = f"{seps[1]}:{seps[2]}"
+                zip_name = f"backup_{seps[1]}_{seps[2]}.zip"
+                if queue:
+                    queue.put([model_name, zip_name])
+                backuped_models.append(model_name)
         return backuped_models
     
     @classmethod
@@ -442,13 +502,31 @@ class AsyncLoad:
             dest_path = os.path.join(backup_dir, backup_file)
 
         backupde, zip_file = check_zip_file_integrity(dest_path)
-        cls.model_data.set_backup_status(ModelBackupStatus(
-            model_name=model_name,
-            backup_path=cls.backup_path,
-            backup_status=backupde,
-            zip_file=zip_file,
-            zip_md5=None
-        ))
+        if backupde or zip_file:
+            cls.model_data.set_backup_status(ModelBackupStatus(
+                model_name=model_name,
+                backup_path=cls.backup_path if zip_file else None,
+                backup_status=True if zip_file else False,
+                zip_file=zip_file,
+                zip_md5='invalidmd5' if zip_file and not backupde else None
+            ))
+        elif os.path.exists(os.path.join(cls.model_path, os.path.basename(dest_path))):
+            cls.model_data.set_backup_status(ModelBackupStatus(
+                model_name=model_name,
+                backup_path=None,
+                backup_status=False,
+                zip_file=os.path.join(cls.model_path, os.path.basename(dest_path)),
+                zip_md5='invalidmd5'
+            ))
+        else:
+            cls.model_data.set_backup_status(ModelBackupStatus(
+                model_name=model_name,
+                backup_path=None,
+                backup_status=False,
+                zip_file=None,
+                zip_md5=None,
+            ))
+
         if backupde and zip_file:
             return True
         elif not backupde and zip_file:

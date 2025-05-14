@@ -172,11 +172,13 @@ class ModelData:
         """更新备份状态并通知观察者"""
         logger.debug(f"更新备份状态: {status}")  # 调试日志，确保正确更新备份状态
         model_name = status.model_name
-        if status.backup_status and status.zip_file and os.path.exists(status.zip_file):
+        if status.zip_file and os.path.exists(status.zip_file):
             zip_file = status.zip_file
-            zip_md5 = zip_file.split('_')[-1].split('.')[0]
-            status.zip_md5 = zip_md5
             status.size = os.path.getsize(zip_file)
+            if status.backup_status and status.zip_md5 is None:
+                zip_md5 = zip_file.split('_')[-1].split('.')[0]
+                status.zip_md5 = zip_md5
+            
         with self._lock:
             exist = True
             if model_name not in self._models:
