@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from utils.logging_config import setup_logging
 from utils.AsyncExecutor import AsyncExecutor
 from functools import partial
+from utils.UniqueQueue import UniqueQueue
 
 # 初始化日志配置
 logger = setup_logging(log_level=logging.DEBUG, log_tag="ollamab_controller")
@@ -281,7 +282,7 @@ class AsyncLoad:
     _isLoading = False    
     _data_stop_event = threading.Event()
     _data_ready_event = threading.Event()
-    _model_queue = Queue()
+    _model_queue = UniqueQueue() #Queue()
     _task_list = set()
     
     @classmethod
@@ -397,7 +398,7 @@ class AsyncLoad:
             models = cls.model_data.models
             cls._data_ready_event.set()
             for model in models:
-                model_queue.put([model.name, f"backup_{model.llm}_{model.version}.zip"])
+                model_queue.put((model.name, f"backup_{model.llm}_{model.version}.zip"))
             cls._get_backuped_models(model_queue)
         finally:
             cls._data_stop_event.set()
@@ -554,7 +555,7 @@ class AsyncLoad:
                 }))
             #dest_path = os.path.join(cls.backup_path, f"backup_{llm}_{version}.zip")
             #cls._check_model_backup_status(f"{llm}:{version}", dest_path)
-            model_queue.put([f"{llm}:{version}", f"backup_{llm}_{version}.zip"])
+            model_queue.put((f"{llm}:{version}", f"backup_{llm}_{version}.zip"))
         except Exception as e:
             logger.error(f"初始化模型信息时出错: {e}", exc_info=True)
             return e
