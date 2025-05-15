@@ -12,7 +12,7 @@ from ollamab import (
 )
 import os
 import threading
-from models import ModelData, LLMModel, ModelBackupStatus, Blob
+from model import ModelData, LLMModel, ModelBackupStatus, Blob
 from queue import Queue, Empty
 from pydantic import BaseModel
 from utils.logging_config import setup_logging
@@ -22,6 +22,8 @@ from utils.UniqueQueue import UniqueQueue
 
 # 初始化日志配置
 logger = setup_logging(log_level=logging.DEBUG, log_tag="ollamab_controller")
+
+logger.debug(f"ollamab_controller ModelData: {id(ModelData)}")
 
 class ModelDatialFile(BaseModel):
     model_file_path: str

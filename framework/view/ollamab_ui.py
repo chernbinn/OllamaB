@@ -3,8 +3,8 @@ from tkinter import ttk, filedialog, messagebox
 import logging
 import os
 import threading
-from ollamab_controller import BackupController
-from models import (
+from control.ollamab_controller import BackupController
+from model import (
     ModelBackupStatus, 
     ModelData, 
     ModelObserver,
@@ -21,17 +21,15 @@ from utils import (
     AsyncExecutor,
     MultiKeyDict,
 )
-from ui import (
-    ItemTip,
-    Theme,
-    StyleConfigurator,
-)
+from view import ItemTip, Theme, StyleConfigurator
 
 # 初始化日志配置
-logger = logging_config.setup_logging(log_level=logging.DEBUG, b_log_file=False)
+logger = logging_config.setup_logging(log_level=logging.DEBUG, b_log_file=True)
 
 from ctypes import windll
 windll.shcore.SetProcessDpiAwareness(1)  # 解决高DPI缩放问题
+
+logger.debug(f"ollamab_ui ModelData: {id(ModelData)}")
 
 class BackupApp:
     def __init__(self, master):

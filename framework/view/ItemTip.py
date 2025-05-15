@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
-from models import Statistics
+from model import Statistics
 import os
 import logging
 from utils import logging_config

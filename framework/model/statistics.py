@@ -1,4 +1,4 @@
-from models import (
+from model import (
     ModelBackupStatus, 
     ModelData, 
     ModelObserver,
@@ -11,6 +11,8 @@ import logging, os
 from utils import logging_config
 
 logger = logging_config.setup_logging(logging.INFO, "statistics")
+
+logger.debug(f"statistics ModelData: {id(ModelData)}")
 
 class Statistics:
     model_data = ModelData()

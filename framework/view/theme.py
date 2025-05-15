@@ -1,8 +1,9 @@
 import logging
 from tkinter import ttk
 from enum import Enum
+from utils import logging_config
 
-logger = logging.getLogger(__name__)
+logger = logging_config.setup_logging(log_level=logging.INFO)
 
 class Theme(Enum):
     DEFAULT = "default"

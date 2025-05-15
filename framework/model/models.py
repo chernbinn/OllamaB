@@ -4,12 +4,12 @@ from pydantic import BaseModel, Field
 import copy, os
 import logging
 from utils.logging_config import setup_logging
-from threading import Lock
+from threading import Lock, current_thread
 from enum import Enum
 from functools import wraps
 
 # 初始化日志配置
-logger = setup_logging(log_level=logging.INFO, log_tag="models")
+logger = setup_logging(log_level=logging.DEBUG, log_tag="models", b_log_file=True)
 
 class ModelBackupStatus(BaseModel):
     model_name: str
@@ -117,6 +117,9 @@ class ModelData:
             if not isinstance(observer, ModelObserver):
                 logger.warning(f"添加的观察者未实现ModelObserver协议: {observer}")
             self._observers.append(observer)
+            logger.debug(f"---pid: {os.getpid()} thread_id: {current_thread().name}")
+            logger.info(f"添加观察者: {observer} 观察者数量：{len(self._observers)}")  # 调试日志，确保正确添加观察器
+            logger.debug(f"self.id: {id(self)}")
 
     def remove_observer(self, observer: ModelObserver) -> None:
         logger.debug(f"移除观察者: {observer}")  # 调试日志，确保正确移除观察器
@@ -129,9 +132,11 @@ class ModelData:
 
     def _notify_observers(self, method_name: str, *args, **kwargs) -> None:
         """通知所有观察者的指定方法""" 
+        logger.debug(f"---pid: {os.getpid()} thread_id: {current_thread().name}")
         with self._lock:  # 同样的锁
             current_observers = list(self._observers)  # 创建副本避免长时间持有锁
-            logger.debug(f"通知观察者: {method_name} 观察者数量：{len(current_observers)}")  # 调试日志，确保正确调用方法
+            logger.info(f"通知观察者: {method_name} 观察者数量：{len(current_observers)}")  # 调试日志，确保正确调用方法
+            logger.debug(f"self.id: {id(self)}")
 
         for observer in current_observers:
             try:
