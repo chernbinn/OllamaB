@@ -1,15 +1,7 @@
 import hashlib
 from typing import List, Dict
 import logging
-from ollamab import (
-    clean_temp_files,
-    parse_model_file,     
-    backup_zip, 
-    copy_and_zip_model,  # 拷贝到临时文件在进行普通zip压缩
-    zip_model,  # 直接对文件压缩，采用ZIP_LZMA t9高压缩算法
-    paq_zip_model, # zpaq压缩算法，t5效果最好，但是太耗内存，大文件无法执行压缩
-    check_zip_file_integrity # 检查zip压缩文件完整性
-)
+from core import ollamab
 import os
 import threading
 from model import ModelData, LLMModel, ModelBackupStatus, Blob
@@ -59,9 +51,9 @@ class BackupController:
     @staticmethod
     def _backup_one_model(model_path: str, backup_dir: str, model_dict: dict, zip_name: str) -> str:
         """备份单个模型"""
-        zip_path = zip_model(model_path, model_dict, zip_name)
+        zip_path = ollamab.zip_model(model_path, model_dict, zip_name)
         if zip_path:
-            zip_path = backup_zip(zip_path, backup_dir)
+            zip_path = ollamab.backup_zip(zip_path, backup_dir)
             logger.info(f"备份完成: {zip_path}")
             return zip_path
         return None
@@ -89,7 +81,7 @@ class BackupController:
             ))
         elif model_name in self.cancle_backup_models:
             logger.info(f"{model_name}取消备份成功")
-            clean_temp_files(self.model_path, self.model_path, zip_name)
+            ollamab.clean_temp_files(self.model_path, self.model_path, zip_name)
             self.model_data.set_backup_status(ModelBackupStatus(
                 model_name=model_name,
                 backup_path=self.backup_path,
@@ -109,7 +101,7 @@ class BackupController:
                 ))
             """
         else:
-            clean_temp_files(self.model_path, self.model_path, zip_name)
+            ollamab.clean_temp_files(self.model_path, self.model_path, zip_name)
             if not self.b_shutdown:
                 logger.error(f"备份失败: {model_name}")
                 self.model_data.set_backup_status(ModelBackupStatus(
@@ -491,7 +483,7 @@ class AsyncLoad:
             model_parts = model_name.lsplit(':', 1)
             model_file = os.path.join(cls.model_path,'manifests','registry.ollama.ai', 'library', *model_parts)
         logger.debug(f"解析模型文件: {model_file}")  # 调试日志，确保正确获取模型文件路径
-        model_dict = parse_model_file(model_file)
+        model_dict = ollamab.parse_model_file(model_file)
         return model_dict
 
     @classmethod
@@ -504,7 +496,7 @@ class AsyncLoad:
                 return False
             dest_path = os.path.join(backup_dir, backup_file)
 
-        backupde, zip_file = check_zip_file_integrity(dest_path)
+        backupde, zip_file = ollamab.check_zip_file_integrity(dest_path)
         if backupde or zip_file:
             cls.model_data.set_backup_status(ModelBackupStatus(
                 model_name=model_name,
