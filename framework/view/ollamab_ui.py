@@ -29,8 +29,6 @@ logger = logging_config.setup_logging(log_level=logging.DEBUG, b_log_file=True)
 from ctypes import windll
 windll.shcore.SetProcessDpiAwareness(1)  # 解决高DPI缩放问题
 
-logger.debug(f"ollamab_ui ModelData: {id(ModelData)}")
-
 class BackupApp:
     def __init__(self, master):
         self.master = master        
