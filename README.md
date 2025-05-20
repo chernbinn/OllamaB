@@ -6,11 +6,8 @@
 ## 搭建环境
 
 1.配置环境变量
-<<<<<<< HEAD
+
 配置环境变量OLLAMA_MODELS，该环境变量ollama应用用来存储下载的大模型存放路径，安装ollama应用时需要配置，如果不配置就是默认路径，默认路径是C:\Users\用户名\\.ollama
-=======
-配置环境变量OLLAMA_MODELS，该环境变量ollama应用用来存储下载的大模型存放路径，安装ollama应用时需要配置，如果不配置就是默认路径，默认路径是C:\Users\用户名\.ollama\models
->>>>>>> 8836c414c3d136419d62d12b1b4c6c0a19bf2ec3
 
 ```shell
 OLLAMA_MODELS=F:\llm_models\ollama_modes
