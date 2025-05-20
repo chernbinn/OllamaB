@@ -20,6 +20,7 @@ from utils import (
     logging_config,
     AsyncExecutor,
     MultiKeyDict,
+    ProcessTerminator
 )
 from view import ItemTip, Theme, StyleConfigurator
 
@@ -96,6 +97,8 @@ class BackupApp:
         self.master.destroy()
         self.controller.destroy(True)
         self.itemtip.destroy()
+        pid = os.getpid()
+        ProcessTerminator.terminate(pid)
 
     def on_close(self):
         """处理窗口关闭事件，释放资源"""  
@@ -214,7 +217,7 @@ class BackupApp:
         #logger.debug(f"on_hover: {width}")  # 调试日志，确保正确获取点击位置和列ID        
         #logger.debug(f'#0 width: {self.tree.column("#0", option="width")}')
         tip_width = self.tree.column("#0", option="width")
-        if event.x > tip_width:
+        if event.x > tip_width or event.x < 120:
             self.itemtip.hide()
             return None
 

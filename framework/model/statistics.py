@@ -53,7 +53,7 @@ class Statistics:
         if not llm_model.model_path:
             return content
 
-        content += f"路径：{os.path.join(llm_model.model_path, "blobs")}\n"
+        content += f"路径：{os.path.join(llm_model.model_path, 'blobs')}\n"
         content += f"manifest：{llm_model.manifest}\n\n"
         content += f"blobs：\n"
         for blob in llm_model.blobs:

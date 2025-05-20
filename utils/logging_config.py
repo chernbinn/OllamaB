@@ -282,7 +282,7 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
     """
     effective_log_level = _current_config["release_log_level"] if _current_config["release"] else log_level
     global_log_level = _current_config["release_log_level"] if _current_config["release"] else logging.DEBUG
-    app_name = f"{_current_config["app_name"]}_{'release' if _current_config["release"] else 'debug'}"
+    app_name = f"{_current_config['app_name']}_{'release' if _current_config['release'] else 'debug'}"
 
     # 获取调用模块名称
     module_name = log_tag
