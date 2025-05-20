@@ -40,7 +40,7 @@ _DEFAULT_CONFIG = {
 # 由于__init__.py的存在，在main.py中配置日志都是晚的。最好的方式是在第一次加载该模块时，主动从配置文件中读取配置
 def _load_config():
     """从配置文件加载配置"""
-    global _current_config
+    global _current_config, _config_path
     
     # 确定配置文件路径 (logging.json的路径)
     try:
@@ -55,7 +55,8 @@ def _load_config():
             abs_path = os.path.normpath(os.path.join(base_dir, normalized_path))
         config_path = str(Path(abs_path).resolve())
         #print(f"config_path: {config_path}")
-    
+
+        _config_path = config_path
         # 如果找到配置文件则加载，否则使用默认配置
         if os.path.exists(config_path):
             print(f"-------- load logging config from: {config_path} --------")
@@ -93,7 +94,7 @@ class FileManager:
             if path not in self._open_regular_files:
                 self._prepare_directory(path)
                 try:
-                    #print(f"-------- open regular file: {path} --------")
+                    print(f"-------- open regular file: {path} --------")
                     self._open_regular_files[path] = open(path, mode, encoding="utf-8")
                 except (IOError, OSError) as e:
                     sys.stderr.write(f"Failed to open file {path}: {str(e)}\n")
@@ -108,9 +109,9 @@ class FileManager:
         mode: str = "a"
     ) -> RotatingFileHandler:
         """获取RotatingFileHandler"""
-        #print(f"-------- open rotation file: {path} --------")
-        with self._lock:
+        with self._lock:            
             if path not in self._open_rotating_handlers:
+                print(f"-------- open rotation file: {path}")
                 self._prepare_directory(path)
                 handler = RotatingFileHandler(
                     filename=path,
@@ -283,6 +284,7 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
     effective_log_level = _current_config["release_log_level"] if _current_config["release"] else log_level
     global_log_level = _current_config["release_log_level"] if _current_config["release"] else logging.DEBUG
     app_name = f"{_current_config['app_name']}_{'release' if _current_config['release'] else 'debug'}"
+    log_path = os.path.join(os.path.dirname(_config_path), "logs")
 
     # 获取调用模块名称
     module_name = log_tag
@@ -304,11 +306,12 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
     )
     
     enable_file = _current_config["file_logging"]["enabled"] if _current_config.get("file_logging", {}).get("enabled") else False
-    #print(f"---------- enable_file: {enable_file} --------")
+    #print(f"---------- enable log file: {enable_file}")
     log_files = []
     if enable_file and (not isinstance(sys.stdout, Tee) or not isinstance(sys.stderr, Tee)):
         # 配置完全log文件，包括stdout、stderr
-        log_files.append(f"logs/{app_name}.log")
+        # 程序运行的目录可能存在多变，使用绝对路径。否则正式部署后，log在不同目录下会导致日志文件无法找到，比如用户根目录
+        log_files.append(os.path.join(log_path, f"{app_name}.log"))
         global_config = {
             'max_bytes': _current_config["file_logging"]["max_bytes"] if _current_config.get("file_logging", {}).get("max_bytes") else 10*1024*1024,
             'backup_count': _current_config["file_logging"]["backup_count"] if _current_config.get("file_logging", {}).get("backup_count") else 5
@@ -316,9 +319,9 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
         sys.stdout = Tee(log_files, sys.stdout, "a", global_config)
         sys.stderr = Tee(log_files, sys.stderr, "a", global_config)
 
-    if b_log_file:
+    if not _current_config['release'] and b_log_file:
         # 配置模块级log文件，不包括stdout，文件内容使用logging模块过滤所得及stderr重定向内容
-        log_files.append(f"logs/{app_name}_{module_name}.log")
+        log_files.append(os.path.join(log_path, f"{app_name}_{module_name}.log"))
         moudle_config = {
             'max_bytes': max_bytes,
             'backup_count': backup_count
@@ -333,37 +336,14 @@ def setup_logging(log_level=logging.INFO, log_tag=None, b_log_file:bool=False, m
     console_handler.setLevel(effective_log_level)   # 处理器的日志级别
     console_handler.encoding = 'utf-8'
     logger.addHandler(console_handler)
-    
-    """
-    # 全局日志文件（记录所有模块）
-    global_handler = logging.handlers.RotatingFileHandler(
-        f"{app_name}.log",
-        maxBytes=max_bytes,
-        backupCount=backup_count,
-        encoding='utf-8',
-        # errors='replace'
-    )
-    global_handler.setLevel(effective_log_level)
-    global_handler.setFormatter(formatter)
-    logger.addHandler(global_handler)
-    """
 
-    if b_log_file:
+    if b_log_file and not _current_config["release"]:
         module_handler = _file_manager.get_rotating_handler(
-            f"logs/{app_name}_{module_name}.log",
+            os.path.join(log_path, f"{app_name}_{module_name}.log"),
             max_bytes=max_bytes,
             backup_count=backup_count,
             mode="a"
         )
-        """
-        logging.handlers.RotatingFileHandler(
-            f"{app_name}_{log_tag}.log",
-            maxBytes=max_bytes,
-            backupCount=backup_count,
-            encoding='utf-8',
-            #errors='replace'
-        )
-        """
         module_handler.setLevel(effective_log_level)
         module_handler.addFilter(ModuleFilter(module_name))
         # 确保所有handler使用相同格式

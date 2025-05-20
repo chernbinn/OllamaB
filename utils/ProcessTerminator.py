@@ -1,4 +1,4 @@
-import os, sys, signal
+import os, sys, signal, psutil
 
 class ProcessTerminator:
     @staticmethod
@@ -7,6 +7,13 @@ class ProcessTerminator:
             return ProcessTerminator._windows_terminate(pid)
         else:
             return ProcessTerminator._posix_terminate(pid)
+
+    @staticmethod
+    def terminate_children():
+        current_process = psutil.Process()
+        children = current_process.children(recursive=True)
+        for child in children:
+            terminated(child.pid)
 
     @staticmethod
     def _windows_terminate(pid: int):

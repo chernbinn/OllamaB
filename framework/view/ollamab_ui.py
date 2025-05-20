@@ -1,3 +1,4 @@
+from operator import itemgetter
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import logging
@@ -16,12 +17,10 @@ from model import (
 import queue
 from threading import Thread
 from pathlib import Path
-from utils import (
-    logging_config,
-    AsyncExecutor,
-    MultiKeyDict,
-    ProcessTerminator
-)
+from utils import logging_config
+from utils.AsyncExecutor import AsyncExecutor
+from utils.MultiKeyDict import MultiKeyDict
+from utils.ProcessTerminator import ProcessTerminator
 from view import ItemTip, Theme, StyleConfigurator
 
 # 初始化日志配置
@@ -93,35 +92,50 @@ class BackupApp:
         self.controller.start_async_loading()
 
     def _release(self):
-        self.uiHandler.running = False
-        self.master.destroy()
-        self.controller.destroy(True)
-        self.itemtip.destroy()
+        try:
+            if hasattr(self, 'uiHandler') and self.uiHandler:
+                self.uiHandler.running = False
+            if hasattr(self, 'master') and self.master:
+                self.master.destroy()
+            if hasattr(self, 'controller') and self.controller:
+                self.controller.destroy(True)
+            if hasattr(self, 'itemtip') and self.itemtip:
+                self.itemtip.destroy()
+            if hasattr(self, 'tree_items') and self.tree_items:
+                self.tree_items.clear()
+        except Exception as e:
+            logger.error(f"释放资源失败：{e}")
+        
         pid = os.getpid()
+        ProcessTerminator.terminate_children() # 终止所有子进程, 包括manager进程
         ProcessTerminator.terminate(pid)
 
     def on_close(self):
-        """处理窗口关闭事件，释放资源"""  
-        process_count = self.controller.get_backupping_count()
-        queue_count = self.controller.get_queued_count()
-        if self.controller.get_backupping_count() == 0: #(process_count == 0 and queue_count == 0) or not self.model_data.initialized:
-            logger.info("没有正在进行的备份或排队备份，直接关闭应用程序。")
-            self._release()
-        else:
-            logger.info(f"请求确认退出应用程序？")
-            b_destroy = messagebox.askyesno(
-                "确认退出", 
-                "是否确认退出应用程序？"
-                f"""注意：\n
-                    有{process_count}个模型正在备份，
-                    有{queue_count}个模型正在排队备份。\n
-                    如果您选择退出，所有正在进行的操作将被取消。"""
-            )
-            if b_destroy:
-                logger.info("用户确认退出应用程序。")
+        """处理窗口关闭事件，释放资源"""
+        if hasattr(self, 'controller') and self.controller:
+            process_count = self.controller.get_backupping_count()
+            queue_count = self.controller.get_queued_count()
+            if self.controller.get_backupping_count() == 0: #(process_count == 0 and queue_count == 0) or not self.model_data.initialized:
+                logger.info("没有正在进行的备份或排队备份，直接关闭应用程序。")
                 self._release()
             else:
-                logger.info("用户取消退出应用程序。")
+                logger.info(f"请求确认退出应用程序？")
+                b_destroy = messagebox.askyesno(
+                    "确认退出", 
+                    "是否确认退出应用程序？"
+                    f"""注意：\n
+                        有{process_count}个模型正在备份，
+                        有{queue_count}个模型正在排队备份。\n
+                        如果您选择退出，所有正在进行的操作将被取消。"""
+                )
+                if b_destroy:
+                    logger.info("用户确认退出应用程序。")
+                    self._release()
+                else:
+                    logger.info("用户取消退出应用程序。")
+        else:
+            logger.info("没有正在进行的备份或排队备份，直接关闭应用程序。")
+            self._release()
 
     def create_widgets(self)->None:        
         # 主框架

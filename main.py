@@ -32,6 +32,12 @@ sys.path.extend([
 ])
 
 from view import ollamab_ui
+import signal
+
+def handle_ctrl_c(signum, frame):
+    print("接收到 Ctrl+C，不响应程序终止，从窗口关闭程序。")
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, handle_ctrl_c)
+    print(f"Current PID: {os.getpid()}, Parent PID: {os.getppid()}")
     ollamab_ui.run()

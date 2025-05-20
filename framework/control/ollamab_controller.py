@@ -4,7 +4,7 @@ import logging
 import os
 from functools import partial
 from utils import logging_config
-from utils import AsyncExecutor
+from utils.AsyncExecutor import AsyncExecutor
 from core import ollamab
 from model import ModelData, LLMModel, ModelBackupStatus, Blob
 from control.AsyncLoad import AsyncLoad

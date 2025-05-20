@@ -12,7 +12,7 @@ from multiprocessing import Manager, Lock
 import psutil, signal, sys
 from collections import OrderedDict
 import sys, os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+#sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.logging_config import setup_logging
 
 logger = setup_logging(log_level=logging.INFO,b_log_file=False)
@@ -221,7 +221,7 @@ class AsyncExecutor:
         if not self._callback_direct:
             self._callback_queue = Queue()  # 用于主线程回调
 
-        self._manager = Manager()
+        self._manager = Manager() # 初始化该对象会创建一个子进程，用于管理共享对象。实际上是封装了一个socket服务器，用于接收来自子进程的请求。
         self._process_pids = self._manager.dict()  # 共享字典, {task_id: pid}
         self._process_lock = self._manager.Lock()  # 共享锁
 
@@ -744,15 +744,15 @@ class AsyncExecutor:
             if not self._callback_direct:
                 while not self._callback_queue.empty():
                     self._callback_queue.get()  # 清空回调队列
-        
-        logger.info("Shutting down thread pool.")
-        self._thread_pool.shutdown(wait=False)
+
         logger.info("Shutting down process pool.")
         self._process_pool.shutdown(wait=False)
         logger.info("Shutting down share args.")
         self._manager.shutdown()  # 必须显式关闭Manager
+        logger.info("Shutting down thread pool.")
+        self._thread_pool.shutdown(wait=False)
         logger.debug("Shutting down executor over")
-
+        
     def is_task_active(self, task_id: str) -> bool:
         """检查任务是否在运行或排队中"""
         with self._lock:
@@ -831,6 +831,7 @@ def reliable_task(seconds, name, comm_file):
         os.remove(comm_file)  # 清理
     
 # 使用示例
+
 if __name__ == "__main__":
     def task_callback(result):
         if isinstance(result, Exception):
